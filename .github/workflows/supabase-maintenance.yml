@@ -1,0 +1,55 @@
+name: Keep Supabase Alive
+
+on:
+  schedule:
+    - cron: '0 12 * * 1'  # Every Monday at 12:00 UTC
+  workflow_dispatch:       # Allow manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase to prevent project pause
+        run: |
+          curl -sf \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/colecciones?select=id&limit=1" \
+            && echo "✅ Supabase ping successful" \
+            || echo "⚠️ Ping failed (project may be paused or credentials wrong)"
+
+---
+name: Retry Pending Garments
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger retry for garments in 'reintentar' state
+        run: |
+          # Get all garments in 'reintentar' state
+          GARMENTS=$(curl -sf \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/prendas?estado=eq.reintentar&select=id" \
+          )
+          echo "Garments to retry: $GARMENTS"
+
+          # For each garment, call the process-garment Edge Function
+          echo "$GARMENTS" | jq -r '.[].id' | while read ID; do
+            echo "Retrying garment: $ID"
+            curl -sf \
+              -X POST \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+              "${{ secrets.SUPABASE_URL }}/functions/v1/process-garment" \
+              -d "{\"prenda_id\": \"$ID\"}" \
+            && echo "✅ Triggered $ID" \
+            || echo "⚠️ Failed to trigger $ID"
+            sleep 5
+          done
