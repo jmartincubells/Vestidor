@@ -53,8 +53,13 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
 
   // Redraw mannequin whenever measurements or face photo change in editor
   useEffect(() => {
-    if (step === 'editor' && canvasRef.current) {
-      drawMannequinWithFace(canvasRef.current, measurements, facePhotoUrl)
+    if (step === 'editor') {
+      const timer = setTimeout(() => {
+        if (canvasRef.current) {
+          drawMannequinWithFace(canvasRef.current, measurements, facePhotoUrl)
+        }
+      }, 50)
+      return () => clearTimeout(timer)
     }
   }, [step, measurements, facePhotoUrl])
 
@@ -547,40 +552,57 @@ function drawMannequinWithFace(
   ctx.clearRect(0, 0, W, H)
 
   const cx = W / 2
-  const scale = H / (m.altura_cm || 165)
 
-  const shoulderW = Math.max(25, (m.hombros_cm * scale) / 2)
-  const waistW    = Math.max(20, (m.cintura_cm * scale) / 2)
-  const hipW      = Math.max(25, (m.cadera_cm * scale) / 2)
-  const torsoH    = Math.max(40, m.largo_torso_cm * scale)
-  const legH      = Math.max(60, m.largo_piernas_cm * scale)
+  // Total available vertical space for mannequin (82% of height)
+  const availableH = H * 0.82
+  const heightCm = m.altura_cm || 165
+  const scale = availableH / heightCm
 
-  const headR     = Math.max(16, shoulderW * 0.48)
-  const headY     = H * 0.10 + headR
-  const shoulderY = headY + headR * 1.5
+  // Convert circumferences to flat front-view width (~0.32 factor)
+  const flatShoulder = m.hombros_cm // hombros is already flat width
+  const flatWaist = m.cintura_cm * 0.32
+  const flatHip = m.cadera_cm * 0.32
+
+  const shoulderW = Math.max(35, (flatShoulder * scale) / 2)
+  const waistW    = Math.max(25, (flatWaist * scale) / 2)
+  const hipW      = Math.max(35, (flatHip * scale) / 2)
+  const torsoH    = Math.max(70, m.largo_torso_cm * scale)
+  const legH      = Math.max(110, m.largo_piernas_cm * scale)
+
+  const headR     = Math.max(24, shoulderW * 0.45)
+  const startY    = H * 0.06
+  const headY     = startY + headR
+  const shoulderY = headY + headR * 1.4
   const waistY    = shoulderY + torsoH * 0.45
   const hipY      = shoulderY + torsoH
-  const ankleY    = Math.min(H * 0.92, hipY + legH)
+  const ankleY    = Math.min(H * 0.94, hipY + legH)
 
-  // Body gradient
+  // Glowing background halo behind mannequin
+  const halo = ctx.createRadialGradient(cx, H * 0.5, 20, cx, H * 0.5, W * 0.45)
+  halo.addColorStop(0, 'rgba(201, 160, 180, 0.18)')
+  halo.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  ctx.fillStyle = halo
+  ctx.fillRect(0, 0, W, H)
+
+  // Body gradient fill
   const grad = ctx.createLinearGradient(0, headY, 0, ankleY)
-  grad.addColorStop(0,   'rgba(215, 188, 208, 0.95)')
-  grad.addColorStop(0.5, 'rgba(185, 155, 178, 0.95)')
-  grad.addColorStop(1,   'rgba(150, 118, 144, 0.90)')
+  grad.addColorStop(0,   'rgba(225, 195, 215, 0.95)')
+  grad.addColorStop(0.4, 'rgba(195, 160, 185, 0.95)')
+  grad.addColorStop(1,   'rgba(160, 125, 152, 0.90)')
   ctx.fillStyle = grad
-  ctx.strokeStyle = 'rgba(255, 215, 240, 0.45)'
-  ctx.lineWidth = 2
+  ctx.strokeStyle = 'rgba(255, 230, 248, 0.7)'
+  ctx.lineWidth = 2.5
 
   // 1. Draw Body Silhouette
   ctx.beginPath()
   ctx.moveTo(cx - shoulderW, shoulderY)
-  ctx.bezierCurveTo(cx - shoulderW - 6, waistY - torsoH * 0.15, cx - waistW, waistY, cx - hipW, hipY)
+  ctx.bezierCurveTo(cx - shoulderW - 4, waistY - torsoH * 0.15, cx - waistW, waistY, cx - hipW, hipY)
   ctx.lineTo(cx - hipW * 0.55, ankleY)
   ctx.lineTo(cx + hipW * 0.55, ankleY)
   ctx.lineTo(cx + hipW, hipY)
-  ctx.bezierCurveTo(cx + waistW, waistY, cx + shoulderW + 6, waistY - torsoH * 0.15, cx + shoulderW, shoulderY)
-  ctx.lineTo(cx + headR * 0.35, shoulderY - headR * 0.3)
-  ctx.lineTo(cx - headR * 0.35, shoulderY - headR * 0.3)
+  ctx.bezierCurveTo(cx + waistW, waistY, cx + shoulderW + 4, waistY - torsoH * 0.15, cx + shoulderW, shoulderY)
+  ctx.lineTo(cx + headR * 0.35, shoulderY - headR * 0.25)
+  ctx.lineTo(cx - headR * 0.35, shoulderY - headR * 0.25)
   ctx.closePath()
   ctx.fill()
   ctx.stroke()
@@ -600,8 +622,8 @@ function drawMannequinWithFace(
       // Border around face avatar
       ctx.beginPath()
       ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-      ctx.strokeStyle = 'var(--clr-primary)'
-      ctx.lineWidth = 2.5
+      ctx.strokeStyle = '#c9a0b4'
+      ctx.lineWidth = 3
       ctx.stroke()
     }
     faceImg.src = facePhotoUrl
