@@ -7,7 +7,10 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables. Check .env.local')
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+// Ensure clean base URL without trailing slashes or /rest/v1
+const cleanSupabaseUrl = supabaseUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '')
+
+export const supabase = createClient(cleanSupabaseUrl, supabaseAnonKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
