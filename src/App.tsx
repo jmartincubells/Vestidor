@@ -7,6 +7,7 @@ import OnboardingPage from './pages/OnboardingPage'
 import WardrobePage from './pages/WardrobePage'
 import ClosetPage from './pages/ClosetPage'
 import AddGarmentPage from './pages/AddGarmentPage'
+import ProfileSettingsPage from './pages/ProfileSettingsPage'
 import AppShell from './components/AppShell'
 import { ToastProvider } from './components/ui/Toast'
 
@@ -84,6 +85,7 @@ function App() {
               <Route path="/vestidor" element={<WardrobePage user={user} />} />
               <Route path="/closet" element={<ClosetPage user={user} />} />
               <Route path="/agregar" element={<AddGarmentPage user={user} />} />
+              <Route path="/perfil" element={<ProfileSettingsPage user={user} />} />
               <Route path="*" element={<Navigate to="/vestidor" replace />} />
             </Route>
           )}

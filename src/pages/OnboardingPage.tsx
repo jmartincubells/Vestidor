@@ -258,6 +258,12 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
             </p>
           </div>
 
+          <div className="glass-sm" style={{ padding: '10px 14px', width: '100%', textAlign: 'left', borderColor: 'var(--clr-primary-glow)' }}>
+            <p className="text-xs text-muted" style={{ lineHeight: 1.5 }}>
+              💡 <strong className="text-primary">No te preocupes por la precisión exacta ahora.</strong> Podés modificar tus medidas y tu foto de rostro en cualquier momento desde la sección <strong>Perfil / Ajustes</strong>.
+            </p>
+          </div>
+
           <div className="flex flex-col gap-md w-full">
             {/* Option A: Fast with photo */}
             <div
