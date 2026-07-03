@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { initPoseLandmarker, extractMeasurements, type BodyMeasurements } from '../lib/poseDetection'
-import { removeImageBackground } from '../lib/backgroundRemoval'
+import { removeImageBackground, blobToBase64 } from '../lib/backgroundRemoval'
 import { cacheMannequin } from '../lib/idb'
 
 type OnboardingStep = 'choose_mode' | 'manual_form' | 'photo_height' | 'photo_capture' | 'processing' | 'editor' | 'saving' | 'done' | 'error'
@@ -40,6 +40,9 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
   // Optional face photo (base64 or object URL)
   const [facePhotoUrl, setFacePhotoUrl] = useState<string | null>(null)
   
+  // Real body cutout base64 PNG from user's full-body photo
+  const [userBodyCutout, setUserBodyCutout] = useState<string | null>(null)
+  
   // Processing state
   const [progress, setProgress] = useState(0)
   const [progressLabel, setProgressLabel] = useState('')
@@ -51,17 +54,17 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
   const faceInputRef = useRef<HTMLInputElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
-  // Redraw mannequin whenever measurements or face photo change in editor
+  // Redraw mannequin whenever measurements, face photo, or body cutout change in editor
   useEffect(() => {
     if (step === 'editor') {
       const timer = setTimeout(() => {
         if (canvasRef.current) {
-          drawMannequinWithFace(canvasRef.current, measurements, facePhotoUrl)
+          drawMannequinWithFace(canvasRef.current, measurements, facePhotoUrl, userBodyCutout)
         }
       }, 50)
       return () => clearTimeout(timer)
     }
-  }, [step, measurements, facePhotoUrl])
+  }, [step, measurements, facePhotoUrl, userBodyCutout])
 
   // Handle measurement changes with validation
   const updateMeasurement = (key: keyof RealMeasurements, val: number) => {
@@ -141,12 +144,14 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
         }
       }
 
-      // Background removal attempt
-      setProgressLabel('Extrayendo silueta…')
+      // Background removal on user's body photo
+      setProgressLabel('Extrayendo silueta de tu cuerpo real…')
       try {
-        await removeImageBackground(file, (p) => setProgress(50 + Math.round(p * 0.4)))
+        const bgResult = await removeImageBackground(file, (p) => setProgress(50 + Math.round(p * 0.4)))
+        const b64 = await blobToBase64(bgResult.blob)
+        setUserBodyCutout(b64)
       } catch {
-        console.warn('Background removal skipped')
+        console.warn('Body background removal skipped')
       }
 
       setMeasurements(estimated)
@@ -555,7 +560,8 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
 function drawMannequinWithFace(
   canvas: HTMLCanvasElement,
   m: RealMeasurements,
-  facePhotoUrl: string | null
+  facePhotoUrl: string | null,
+  userBodyCutout: string | null = null
 ) {
   const ctx = canvas.getContext('2d')
   if (!ctx) return
@@ -568,7 +574,23 @@ function drawMannequinWithFace(
 
   const cx = W / 2
 
-  // Total available vertical space for mannequin (82% of height)
+  // If user provided a real full-body photo and background was removed, render real body cutout!
+  if (userBodyCutout) {
+    const bodyImg = new Image()
+    bodyImg.crossOrigin = 'anonymous'
+    bodyImg.onload = () => {
+      ctx.drawImage(bodyImg, 20, 20, W - 40, H - 40)
+
+      // Overlay face avatar if explicitly uploaded
+      if (facePhotoUrl) {
+        drawFaceAvatar(ctx, facePhotoUrl, cx, H * 0.14, 36)
+      }
+    }
+    bodyImg.src = userBodyCutout
+    return
+  }
+
+  // Otherwise draw stylized vector mannequin
   const availableH = H * 0.82
   const heightCm = m.altura_cm || 165
   const scale = availableH / heightCm
@@ -648,4 +670,30 @@ function drawMannequinWithFace(
     ctx.fill()
     ctx.stroke()
   }
+}
+
+function drawFaceAvatar(
+  ctx: CanvasRenderingContext2D,
+  facePhotoUrl: string,
+  cx: number,
+  headY: number,
+  headR: number
+) {
+  const faceImg = new Image()
+  faceImg.crossOrigin = 'anonymous'
+  faceImg.onload = () => {
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+    ctx.clip()
+    ctx.drawImage(faceImg, cx - headR, headY - headR, headR * 2, headR * 2)
+    ctx.restore()
+
+    ctx.beginPath()
+    ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+    ctx.strokeStyle = '#c9a0b4'
+    ctx.lineWidth = 3
+    ctx.stroke()
+  }
+  faceImg.src = facePhotoUrl
 }

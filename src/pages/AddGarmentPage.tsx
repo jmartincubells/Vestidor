@@ -174,9 +174,10 @@ export default function AddGarmentPage({ user }: AddGarmentPageProps) {
         .catch(err => console.error('Trigger process-garment error:', err))
 
       setStep('done')
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Submit garment error:', err)
-      showToast('Error al guardar la prenda. Revisá tu conexión.', 'error')
+      const message = err && typeof err === 'object' && 'message' in err ? String(err.message) : 'Error al guardar la prenda'
+      showToast(`Error al guardar: ${message}`, 'error')
       setStep('confirm-label')
     }
   }
