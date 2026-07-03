@@ -43,6 +43,9 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
   // Real body cutout base64 PNG from user's full-body photo
   const [userBodyCutout, setUserBodyCutout] = useState<string | null>(null)
   
+  // Live mannequin preview as PNG dataURL
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+
   // Processing state
   const [progress, setProgress] = useState(0)
   const [progressLabel, setProgressLabel] = useState('')
@@ -52,17 +55,11 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const galleryInputRef = useRef<HTMLInputElement>(null)
   const faceInputRef = useRef<HTMLInputElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
 
-  // Redraw mannequin whenever measurements, face photo, or body cutout change in editor
+  // Redraw mannequin preview whenever measurements, face photo, or body cutout change
   useEffect(() => {
     if (step === 'editor') {
-      const timer = setTimeout(() => {
-        if (canvasRef.current) {
-          drawMannequinWithFace(canvasRef.current, measurements, facePhotoUrl, userBodyCutout)
-        }
-      }, 50)
-      return () => clearTimeout(timer)
+      drawMannequinToDataUrl(measurements, facePhotoUrl, userBodyCutout).then(url => setPreviewUrl(url))
     }
   }, [step, measurements, facePhotoUrl, userBodyCutout])
 
@@ -181,10 +178,8 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
     setStep('saving')
 
     try {
-      let svgData: string | null = null
-      if (canvasRef.current) {
-        svgData = canvasRef.current.toDataURL('image/png')
-      }
+      // Use previewUrl if already generated, otherwise render now
+      const svgData = previewUrl ?? await drawMannequinToDataUrl(measurements, facePhotoUrl, userBodyCutout)
 
       // Normalized relative values for Edge Functions / VTON rendering
       const scale = measurements.altura_cm
@@ -434,7 +429,7 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
           {/* Grid Layout: Canvas Left, Sliders Right */}
           <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 'var(--space-md)', width: '100%', alignItems: 'start' }}>
 
-            {/* Mannequin Canvas Container */}
+            {/* Mannequin Preview Container */}
             <div className="flex flex-col items-center gap-xs">
               <div style={{
                 position: 'relative',
@@ -442,11 +437,22 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
                 height: 320,
                 borderRadius: 'var(--radius-md)',
                 overflow: 'hidden',
-                border: '1px solid var(--clr-border)',
+                border: '1px solid var(--clr-primary-glow)',
                 background: 'linear-gradient(180deg, var(--clr-surface-2) 0%, var(--clr-surface-3) 100%)',
                 boxShadow: 'var(--shadow-glow)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
               }}>
-                <canvas ref={canvasRef} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                {previewUrl ? (
+                  <img
+                    src={previewUrl}
+                    alt="Vista previa del maniquí"
+                    style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                  />
+                ) : (
+                  <div className="spinner" />
+                )}
               </div>
 
               {/* Face photo button below canvas */}
@@ -555,145 +561,135 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
 }
 
 /**
- * Draws the stylized mannequin onto canvas with real cm parameters + optional face avatar overlay
+ * Renders the mannequin (or real body cutout) onto an offscreen canvas
+ * and returns a PNG dataURL. Fully async to handle image loading.
  */
-function drawMannequinWithFace(
-  canvas: HTMLCanvasElement,
+function drawMannequinToDataUrl(
   m: RealMeasurements,
   facePhotoUrl: string | null,
   userBodyCutout: string | null = null
-) {
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
+): Promise<string> {
+  return new Promise(resolve => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 400
+    canvas.height = 700
+    const ctx = canvas.getContext('2d')!
+    const W = canvas.width
+    const H = canvas.height
+    const cx = W / 2
 
-  canvas.width = 400
-  canvas.height = 700
-  const W = canvas.width
-  const H = canvas.height
-  ctx.clearRect(0, 0, W, H)
-
-  const cx = W / 2
-
-  // If user provided a real full-body photo and background was removed, render real body cutout!
-  if (userBodyCutout) {
-    const bodyImg = new Image()
-    bodyImg.crossOrigin = 'anonymous'
-    bodyImg.onload = () => {
-      ctx.drawImage(bodyImg, 20, 20, W - 40, H - 40)
-
-      // Overlay face avatar if explicitly uploaded
-      if (facePhotoUrl) {
-        drawFaceAvatar(ctx, facePhotoUrl, cx, H * 0.14, 36)
+    // If user has a real body photo cutout, use it
+    if (userBodyCutout) {
+      const bodyImg = new Image()
+      bodyImg.onload = () => {
+        ctx.drawImage(bodyImg, 20, 20, W - 40, H - 40)
+        if (facePhotoUrl) {
+          const faceImg = new Image()
+          faceImg.onload = () => {
+            const headR = 36
+            const headY = H * 0.14
+            ctx.save()
+            ctx.beginPath()
+            ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+            ctx.clip()
+            ctx.drawImage(faceImg, cx - headR, headY - headR, headR * 2, headR * 2)
+            ctx.restore()
+            resolve(canvas.toDataURL('image/png'))
+          }
+          faceImg.onerror = () => resolve(canvas.toDataURL('image/png'))
+          faceImg.src = facePhotoUrl
+        } else {
+          resolve(canvas.toDataURL('image/png'))
+        }
       }
+      bodyImg.onerror = () => resolve(canvas.toDataURL('image/png'))
+      bodyImg.src = userBodyCutout
+      return
     }
-    bodyImg.src = userBodyCutout
-    return
-  }
 
-  // Otherwise draw stylized vector mannequin
-  const availableH = H * 0.82
-  const heightCm = m.altura_cm || 165
-  const scale = availableH / heightCm
+    // Stylized vector mannequin
+    const availableH = H * 0.82
+    const heightCm = m.altura_cm || 165
+    const scale = availableH / heightCm
 
-  // Convert circumferences to flat front-view width (~0.32 factor)
-  const flatShoulder = m.hombros_cm // hombros is already flat width
-  const flatWaist = m.cintura_cm * 0.32
-  const flatHip = m.cadera_cm * 0.32
+    const flatShoulder = m.hombros_cm
+    const flatWaist = m.cintura_cm * 0.32
+    const flatHip = m.cadera_cm * 0.32
 
-  const shoulderW = Math.max(35, (flatShoulder * scale) / 2)
-  const waistW    = Math.max(25, (flatWaist * scale) / 2)
-  const hipW      = Math.max(35, (flatHip * scale) / 2)
-  const torsoH    = Math.max(70, m.largo_torso_cm * scale)
-  const legH      = Math.max(110, m.largo_piernas_cm * scale)
+    const shoulderW = Math.max(35, (flatShoulder * scale) / 2)
+    const waistW    = Math.max(25, (flatWaist * scale) / 2)
+    const hipW      = Math.max(35, (flatHip * scale) / 2)
+    const torsoH    = Math.max(70, m.largo_torso_cm * scale)
+    const legH      = Math.max(110, m.largo_piernas_cm * scale)
 
-  const headR     = Math.max(24, shoulderW * 0.45)
-  const startY    = H * 0.06
-  const headY     = startY + headR
-  const shoulderY = headY + headR * 1.4
-  const waistY    = shoulderY + torsoH * 0.45
-  const hipY      = shoulderY + torsoH
-  const ankleY    = Math.min(H * 0.94, hipY + legH)
+    const headR     = Math.max(24, shoulderW * 0.45)
+    const startY    = H * 0.06
+    const headY     = startY + headR
+    const shoulderY = headY + headR * 1.4
+    const waistY    = shoulderY + torsoH * 0.45
+    const hipY      = shoulderY + torsoH
+    const ankleY    = Math.min(H * 0.94, hipY + legH)
 
-  // Glowing background halo behind mannequin
-  const halo = ctx.createRadialGradient(cx, H * 0.5, 20, cx, H * 0.5, W * 0.45)
-  halo.addColorStop(0, 'rgba(201, 160, 180, 0.18)')
-  halo.addColorStop(1, 'rgba(0, 0, 0, 0)')
-  ctx.fillStyle = halo
-  ctx.fillRect(0, 0, W, H)
+    const halo = ctx.createRadialGradient(cx, H * 0.5, 20, cx, H * 0.5, W * 0.45)
+    halo.addColorStop(0, 'rgba(201, 160, 180, 0.18)')
+    halo.addColorStop(1, 'rgba(0, 0, 0, 0)')
+    ctx.fillStyle = halo
+    ctx.fillRect(0, 0, W, H)
 
-  // Body gradient fill
-  const grad = ctx.createLinearGradient(0, headY, 0, ankleY)
-  grad.addColorStop(0,   'rgba(225, 195, 215, 0.95)')
-  grad.addColorStop(0.4, 'rgba(195, 160, 185, 0.95)')
-  grad.addColorStop(1,   'rgba(160, 125, 152, 0.90)')
-  ctx.fillStyle = grad
-  ctx.strokeStyle = 'rgba(255, 230, 248, 0.7)'
-  ctx.lineWidth = 2.5
+    const grad = ctx.createLinearGradient(0, headY, 0, ankleY)
+    grad.addColorStop(0,   'rgba(225, 195, 215, 0.95)')
+    grad.addColorStop(0.4, 'rgba(195, 160, 185, 0.95)')
+    grad.addColorStop(1,   'rgba(160, 125, 152, 0.90)')
+    ctx.fillStyle = grad
+    ctx.strokeStyle = 'rgba(255, 230, 248, 0.7)'
+    ctx.lineWidth = 2.5
 
-  // 1. Draw Body Silhouette
-  ctx.beginPath()
-  ctx.moveTo(cx - shoulderW, shoulderY)
-  ctx.bezierCurveTo(cx - shoulderW - 4, waistY - torsoH * 0.15, cx - waistW, waistY, cx - hipW, hipY)
-  ctx.lineTo(cx - hipW * 0.55, ankleY)
-  ctx.lineTo(cx + hipW * 0.55, ankleY)
-  ctx.lineTo(cx + hipW, hipY)
-  ctx.bezierCurveTo(cx + waistW, waistY, cx + shoulderW + 4, waistY - torsoH * 0.15, cx + shoulderW, shoulderY)
-  ctx.lineTo(cx + headR * 0.35, shoulderY - headR * 0.25)
-  ctx.lineTo(cx - headR * 0.35, shoulderY - headR * 0.25)
-  ctx.closePath()
-  ctx.fill()
-  ctx.stroke()
-
-  // 2. Draw Head (Face photo if uploaded, otherwise stylized head)
-  if (facePhotoUrl) {
-    const faceImg = new Image()
-    faceImg.crossOrigin = 'anonymous'
-    faceImg.onload = () => {
-      ctx.save()
-      ctx.beginPath()
-      ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-      ctx.clip()
-      ctx.drawImage(faceImg, cx - headR, headY - headR, headR * 2, headR * 2)
-      ctx.restore()
-
-      // Border around face avatar
-      ctx.beginPath()
-      ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-      ctx.strokeStyle = '#c9a0b4'
-      ctx.lineWidth = 3
-      ctx.stroke()
-    }
-    faceImg.src = facePhotoUrl
-  } else {
     ctx.beginPath()
-    ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+    ctx.moveTo(cx - shoulderW, shoulderY)
+    ctx.bezierCurveTo(cx - shoulderW - 4, waistY - torsoH * 0.15, cx - waistW, waistY, cx - hipW, hipY)
+    ctx.lineTo(cx - hipW * 0.55, ankleY)
+    ctx.lineTo(cx + hipW * 0.55, ankleY)
+    ctx.lineTo(cx + hipW, hipY)
+    ctx.bezierCurveTo(cx + waistW, waistY, cx + shoulderW + 4, waistY - torsoH * 0.15, cx + shoulderW, shoulderY)
+    ctx.lineTo(cx + headR * 0.35, shoulderY - headR * 0.25)
+    ctx.lineTo(cx - headR * 0.35, shoulderY - headR * 0.25)
+    ctx.closePath()
     ctx.fill()
     ctx.stroke()
-  }
-}
 
-function drawFaceAvatar(
-  ctx: CanvasRenderingContext2D,
-  facePhotoUrl: string,
-  cx: number,
-  headY: number,
-  headR: number
-) {
-  const faceImg = new Image()
-  faceImg.crossOrigin = 'anonymous'
-  faceImg.onload = () => {
-    ctx.save()
-    ctx.beginPath()
-    ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-    ctx.clip()
-    ctx.drawImage(faceImg, cx - headR, headY - headR, headR * 2, headR * 2)
-    ctx.restore()
+    const finalize = () => resolve(canvas.toDataURL('image/png'))
 
-    ctx.beginPath()
-    ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-    ctx.strokeStyle = '#c9a0b4'
-    ctx.lineWidth = 3
-    ctx.stroke()
-  }
-  faceImg.src = facePhotoUrl
+    if (facePhotoUrl) {
+      const faceImg = new Image()
+      faceImg.crossOrigin = 'anonymous'
+      faceImg.onload = () => {
+        ctx.save()
+        ctx.beginPath()
+        ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+        ctx.clip()
+        ctx.drawImage(faceImg, cx - headR, headY - headR, headR * 2, headR * 2)
+        ctx.restore()
+        ctx.beginPath()
+        ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+        ctx.strokeStyle = '#c9a0b4'
+        ctx.lineWidth = 3
+        ctx.stroke()
+        finalize()
+      }
+      faceImg.onerror = () => {
+        ctx.beginPath()
+        ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.stroke()
+        finalize()
+      }
+      faceImg.src = facePhotoUrl
+    } else {
+      ctx.beginPath()
+      ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.stroke()
+      finalize()
+    }
+  })
 }
