@@ -1,67 +1,97 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
-import { initPoseLandmarker, extractMeasurements, drawMannequin, type BodyMeasurements } from '../lib/poseDetection'
+import { initPoseLandmarker, extractMeasurements, type BodyMeasurements } from '../lib/poseDetection'
 import { removeImageBackground } from '../lib/backgroundRemoval'
 import { cacheMannequin } from '../lib/idb'
 
-type OnboardingStep = 'height' | 'photo' | 'processing' | 'preview' | 'saving' | 'done' | 'error'
+type OnboardingStep = 'choose_mode' | 'manual_form' | 'photo_height' | 'photo_capture' | 'processing' | 'editor' | 'saving' | 'done' | 'error'
 
 interface OnboardingPageProps {
   user: User
   onComplete: () => void
 }
 
-interface RealMeasurements {
+export interface RealMeasurements {
+  altura_cm: number
   hombros_cm: number
   cintura_cm: number
   cadera_cm: number
   largo_torso_cm: number
   largo_piernas_cm: number
-  altura_cm: number
+}
+
+// Default proportional averages for 165 cm height
+const DEFAULT_MEASUREMENTS: RealMeasurements = {
+  altura_cm: 165,
+  hombros_cm: 38,
+  cintura_cm: 70,
+  cadera_cm: 95,
+  largo_torso_cm: 45,
+  largo_piernas_cm: 80,
 }
 
 export default function OnboardingPage({ user, onComplete }: OnboardingPageProps) {
-  const [step, setStep] = useState<OnboardingStep>('height')
-  const [alturaInput, setAlturaInput] = useState('')
+  const [step, setStep] = useState<OnboardingStep>('choose_mode')
+  
+  // Real measurements in cm (editable by user)
+  const [measurements, setMeasurements] = useState<RealMeasurements>(DEFAULT_MEASUREMENTS)
+  
+  // Optional face photo (base64 or object URL)
+  const [facePhotoUrl, setFacePhotoUrl] = useState<string | null>(null)
+  
+  // Processing state
   const [progress, setProgress] = useState(0)
   const [progressLabel, setProgressLabel] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
-  const [measurements, setMeasurements] = useState<BodyMeasurements | null>(null)
-  const [realMeasurements, setRealMeasurements] = useState<RealMeasurements | null>(null)
-  const [_capturedImageUrl, setCapturedImageUrl] = useState<string | null>(null)
 
+  // File input refs
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const galleryInputRef = useRef<HTMLInputElement>(null)
+  const faceInputRef = useRef<HTMLInputElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
-  // Convert relative MediaPipe measurements to real cm using known height
-  function toRealMeasurements(bm: BodyMeasurements, heightCm: number): RealMeasurements {
-    // altura_estimada is a normalized value (0–1) representing full body proportion in the frame
-    // We use it as the scale factor to convert to cm
-    const scale = heightCm / (bm.altura_estimada > 0 ? bm.altura_estimada : 0.85)
-
-    return {
-      hombros_cm:      Math.round(bm.ancho_hombros * scale),
-      cintura_cm:      Math.round(bm.cintura * scale),
-      cadera_cm:       Math.round(bm.cadera * scale),
-      largo_torso_cm:  Math.round(bm.largo_torso * scale),
-      largo_piernas_cm:Math.round(bm.largo_piernas * scale),
-      altura_cm:       heightCm,
+  // Redraw mannequin whenever measurements or face photo change in editor
+  useEffect(() => {
+    if (step === 'editor' && canvasRef.current) {
+      drawMannequinWithFace(canvasRef.current, measurements, facePhotoUrl)
     }
+  }, [step, measurements, facePhotoUrl])
+
+  // Handle measurement changes with validation
+  const updateMeasurement = (key: keyof RealMeasurements, val: number) => {
+    setMeasurements(prev => ({
+      ...prev,
+      [key]: Math.max(10, Math.min(250, val || 0)),
+    }))
   }
 
+  // Auto-recalculate proportional defaults when height changes
+  const handleHeightChange = (newHeight: number) => {
+    if (!newHeight || newHeight < 120 || newHeight > 220) {
+      updateMeasurement('altura_cm', newHeight)
+      return
+    }
+    const ratio = newHeight / 165
+    setMeasurements({
+      altura_cm: newHeight,
+      hombros_cm: Math.round(38 * ratio),
+      cintura_cm: Math.round(70 * ratio),
+      cadera_cm: Math.round(95 * ratio),
+      largo_torso_cm: Math.round(45 * ratio),
+      largo_piernas_cm: Math.round(80 * ratio),
+    })
+  }
+
+  // Photo processing
   const processPhoto = useCallback(async (file: File, heightCm: number) => {
     setStep('processing')
     setProgress(5)
     setErrorMsg('')
 
     try {
-      // Load image
       setProgressLabel('Cargando imagen…')
       const imageUrl = URL.createObjectURL(file)
-      setCapturedImageUrl(imageUrl)
-
       const img = new Image()
       img.crossOrigin = 'anonymous'
       await new Promise<void>((resolve, reject) => {
@@ -69,83 +99,75 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
         img.onerror = () => reject(new Error('No se pudo cargar la imagen'))
         img.src = imageUrl
       })
-      setProgress(15)
+      setProgress(20)
 
-      // MediaPipe pose detection
-      setProgressLabel('Descargando modelo de poses… (primera vez ~20 seg)')
+      setProgressLabel('Analizando cuerpo… (primera vez ~20 seg)')
       await initPoseLandmarker()
-      setProgress(45)
+      setProgress(50)
 
-      setProgressLabel('Detectando cuerpo…')
-      let bodyMeasurements: BodyMeasurements | null = null
+      let bm: BodyMeasurements | null = null
       try {
-        bodyMeasurements = await extractMeasurements(img)
+        bm = await extractMeasurements(img)
       } catch {
-        bodyMeasurements = null
+        bm = null
       }
 
-      // Fallback proportions if detection fails
-      if (!bodyMeasurements || bodyMeasurements.landmarks.length === 0) {
-        bodyMeasurements = {
-          ancho_hombros: 0.235,
-          cintura: 0.18,
-          cadera: 0.245,
-          largo_torso: 0.29,
-          largo_piernas: 0.46,
-          altura_estimada: 0.85,
-          landmarks: [],
+      // Convert or estimate
+      let estimated: RealMeasurements
+      if (bm && bm.altura_estimada > 0) {
+        const scale = heightCm / bm.altura_estimada
+        estimated = {
+          altura_cm: heightCm,
+          hombros_cm: Math.round(bm.ancho_hombros * scale * 100),
+          cintura_cm: Math.round(bm.cintura * scale * 100),
+          cadera_cm: Math.round(bm.cadera * scale * 100),
+          largo_torso_cm: Math.round(bm.largo_torso * scale * 100),
+          largo_piernas_cm: Math.round(bm.largo_piernas * scale * 100),
+        }
+      } else {
+        const ratio = heightCm / 165
+        estimated = {
+          altura_cm: heightCm,
+          hombros_cm: Math.round(38 * ratio),
+          cintura_cm: Math.round(70 * ratio),
+          cadera_cm: Math.round(95 * ratio),
+          largo_torso_cm: Math.round(45 * ratio),
+          largo_piernas_cm: Math.round(80 * ratio),
         }
       }
 
-      setMeasurements(bodyMeasurements)
-      const real = toRealMeasurements(bodyMeasurements, heightCm)
-      setRealMeasurements(real)
-      setProgress(65)
-
-      // Background removal (non-blocking — failures are ok)
+      // Background removal attempt
       setProgressLabel('Extrayendo silueta…')
       try {
-        await removeImageBackground(file, (p) => {
-          setProgress(65 + Math.round(p * 0.25))
-        })
+        await removeImageBackground(file, (p) => setProgress(50 + Math.round(p * 0.4)))
       } catch {
         console.warn('Background removal skipped')
       }
-      setProgress(92)
 
-      // Draw mannequin on canvas
-      setProgressLabel('Generando maniquí…')
-      if (canvasRef.current) {
-        canvasRef.current.width = 400
-        canvasRef.current.height = 700
-
-        if (bodyMeasurements.landmarks.length > 0) {
-          drawMannequin(canvasRef.current, bodyMeasurements, bodyMeasurements.landmarks)
-        } else {
-          drawFallbackMannequin(canvasRef.current, real)
-        }
-      }
-
+      setMeasurements(estimated)
       setProgress(100)
-      setStep('preview')
+      setStep('editor')
 
     } catch (err) {
-      console.error('Onboarding processing error:', err)
-      setErrorMsg(err instanceof Error ? err.message : 'Error desconocido al procesar la foto')
+      console.error('Photo processing error:', err)
+      setErrorMsg(err instanceof Error ? err.message : 'Error al procesar la foto')
       setStep('error')
     }
   }, [])
 
-  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  // Face photo handler
+  const handleFacePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    const heightCm = parseInt(alturaInput, 10)
-    if (file && heightCm >= 130 && heightCm <= 220) {
-      processPhoto(file, heightCm)
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      setFacePhotoUrl(reader.result as string)
     }
-  }, [processPhoto, alturaInput])
+    reader.readAsDataURL(file)
+  }
 
+  // Save to DB and Local Cache
   async function saveMannequin() {
-    if (!measurements || !realMeasurements) return
     setStep('saving')
 
     try {
@@ -154,19 +176,27 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
         svgData = canvasRef.current.toDataURL('image/png')
       }
 
+      // Normalized relative values for Edge Functions / VTON rendering
+      const scale = measurements.altura_cm
+      const ancho_hombros = measurements.hombros_cm / scale
+      const cintura = measurements.cintura_cm / scale
+      const cadera = measurements.cadera_cm / scale
+      const largo_torso = measurements.largo_torso_cm / scale
+      const largo_piernas = measurements.largo_piernas_cm / scale
+
       const { error } = await supabase
         .from('maniqui')
         .upsert({
           user_id: user.id,
-          ancho_hombros:   measurements.ancho_hombros,
-          cintura:         measurements.cintura,
-          cadera:          measurements.cadera,
-          largo_torso:     measurements.largo_torso,
-          largo_piernas:   measurements.largo_piernas,
-          altura_estimada: realMeasurements.altura_cm,
+          ancho_hombros,
+          cintura,
+          cadera,
+          largo_torso,
+          largo_piernas,
+          altura_estimada: measurements.altura_cm,
           landmarks_json: {
-            landmarks: measurements.landmarks,
-            real_cm: realMeasurements,
+            real_cm: measurements,
+            face_photo_base64: facePhotoUrl,
           },
         })
         .select()
@@ -175,148 +205,184 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
 
       await cacheMannequin({
         measurements: {
-          ancho_hombros:   measurements.ancho_hombros,
-          cintura:         measurements.cintura,
-          cadera:          measurements.cadera,
-          largo_torso:     measurements.largo_torso,
-          largo_piernas:   measurements.largo_piernas,
-          altura_estimada: realMeasurements.altura_cm,
+          ancho_hombros,
+          cintura,
+          cadera,
+          largo_torso,
+          largo_piernas,
+          altura_estimada: measurements.altura_cm,
         },
         svgData,
       })
 
       setStep('done')
-      setTimeout(onComplete, 1500)
+      setTimeout(onComplete, 1400)
     } catch (err) {
       console.error('Save error:', err)
-      setErrorMsg('Error al guardar. Revisá tu conexión a internet.')
+      setErrorMsg('Error al guardar las medidas. Revisá tu conexión.')
       setStep('error')
     }
   }
 
-  function reset() {
-    setStep('height')
-    setCapturedImageUrl(null)
-    setMeasurements(null)
-    setRealMeasurements(null)
-    setProgress(0)
-    setProgressLabel('')
-    setErrorMsg('')
-    if (cameraInputRef.current) cameraInputRef.current.value = ''
-    if (galleryInputRef.current) galleryInputRef.current.value = ''
-  }
-
-  const heightCm = parseInt(alturaInput, 10)
-  const heightValid = heightCm >= 130 && heightCm <= 220
+  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file && measurements.altura_cm >= 120) {
+      processPhoto(file, measurements.altura_cm)
+    }
+  }, [processPhoto, measurements.altura_cm])
 
   return (
-    <div className="page-centered" style={{ gap: 'var(--space-lg)', textAlign: 'center' }}>
+    <div className="page-centered" style={{ gap: 'var(--space-md)', padding: 'var(--space-md)' }}>
 
-      {/* File inputs — static attributes for Safari/Chrome compatibility */}
-      <input ref={cameraInputRef} type="file" accept="image/*" capture="environment"
-        style={{ display: 'none' }} onChange={handleFileChange} />
-      <input ref={galleryInputRef} type="file" accept="image/*"
-        style={{ display: 'none' }} onChange={handleFileChange} />
+      {/* Hidden inputs */}
+      <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleFileChange} />
+      <input ref={galleryInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFileChange} />
+      <input ref={faceInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFacePhotoSelect} />
 
-      {/* ── PASO 1: ALTURA ── */}
-      {step === 'height' && (
-        <div className="animate-fade-in flex flex-col items-center gap-lg" style={{ maxWidth: 360, width: '100%' }}>
-          <div style={{ fontSize: '3.5rem' }}>📏</div>
+      {/* ── PASO 0: ELEGIR MODO ── */}
+      {step === 'choose_mode' && (
+        <div className="animate-fade-in flex flex-col items-center gap-lg" style={{ maxWidth: 380, width: '100%' }}>
+          <div style={{ fontSize: '3.5rem' }}>✨</div>
+
           <div>
-            <h1 className="font-display text-2xl font-semibold text-primary" style={{ marginBottom: 8 }}>
-              Primero, tu altura
+            <h1 className="font-display text-2xl font-semibold text-primary" style={{ marginBottom: 6 }}>
+              Creemos tu maniquí
             </h1>
-            <p className="text-sm text-muted" style={{ lineHeight: 1.7 }}>
-              Con tu altura podemos calcular las medidas reales en centímetros desde la foto.
+            <p className="text-sm text-muted" style={{ lineHeight: 1.6 }}>
+              Elegí la forma que te resulte más cómoda para registrar tus medidas:
             </p>
           </div>
 
-          <div className="glass flex flex-col gap-md" style={{ padding: 'var(--space-lg)', width: '100%' }}>
-            <label className="text-sm text-muted uppercase tracking-wide text-left" style={{ display: 'block', marginBottom: 4 }}>
-              Tu altura en centímetros
-            </label>
-            <div style={{ position: 'relative' }}>
-              <input
-                id="input-altura"
-                type="number"
-                inputMode="numeric"
-                placeholder="Ej: 165"
-                value={alturaInput}
-                onChange={e => setAlturaInput(e.target.value)}
-                className="input"
-                min={130}
-                max={220}
-                style={{ paddingRight: 48 }}
-              />
-              <span style={{
-                position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)',
-                color: 'var(--clr-text-3)', fontSize: '0.875rem',
-              }}>cm</span>
+          <div className="flex flex-col gap-md w-full">
+            {/* Option A: Fast with photo */}
+            <div
+              className="glass"
+              style={{
+                padding: 'var(--space-md)',
+                cursor: 'pointer',
+                textAlign: 'left',
+                display: 'flex',
+                gap: 'var(--space-md)',
+                alignItems: 'center',
+                transition: 'transform 0.2s, border-color 0.2s',
+              }}
+              onClick={() => setStep('photo_height')}
+            >
+              <div style={{ fontSize: '2.2rem' }}>📸</div>
+              <div style={{ flex: 1 }}>
+                <h3 className="font-semibold text-primary text-base" style={{ marginBottom: 2 }}>
+                  Modo Rápido (Foto + Altura)
+                </h3>
+                <p className="text-xs text-muted" style={{ lineHeight: 1.5 }}>
+                  Sacás una foto de cuerpo completo y la IA estimará tus medidas. Podés corregirlas después.
+                </p>
+              </div>
+              <span className="text-muted">→</span>
             </div>
 
-            {alturaInput && !heightValid && (
-              <p className="text-xs" style={{ color: 'var(--clr-danger)', textAlign: 'left' }}>
-                Ingresá una altura válida (entre 130 y 220 cm)
-              </p>
-            )}
-
-            {heightValid && (
-              <div className="flex items-center gap-sm" style={{ color: 'var(--clr-success)', fontSize: '0.875rem' }}>
-                <span>✓</span>
-                <span>{heightCm} cm registrado</span>
+            {/* Option B: Manual Precise */}
+            <div
+              className="glass"
+              style={{
+                padding: 'var(--space-md)',
+                cursor: 'pointer',
+                textAlign: 'left',
+                display: 'flex',
+                gap: 'var(--space-md)',
+                alignItems: 'center',
+                transition: 'transform 0.2s, border-color 0.2s',
+              }}
+              onClick={() => {
+                setMeasurements(DEFAULT_MEASUREMENTS)
+                setStep('editor')
+              }}
+            >
+              <div style={{ fontSize: '2.2rem' }}>📏</div>
+              <div style={{ flex: 1 }}>
+                <h3 className="font-semibold text-primary text-base" style={{ marginBottom: 2 }}>
+                  Modo Preciso (Carga Manual)
+                </h3>
+                <p className="text-xs text-muted" style={{ lineHeight: 1.5 }}>
+                  Cargás manualmente tu altura, hombros, cintura, cadera y largos. 100% exacto a tu gusto.
+                </p>
               </div>
-            )}
+              <span className="text-muted">→</span>
+            </div>
           </div>
-
-          <button
-            id="btn-continue-to-photo"
-            className="btn btn-primary w-full"
-            disabled={!heightValid}
-            onClick={() => setStep('photo')}
-          >
-            Siguiente → Sacar foto
-          </button>
         </div>
       )}
 
-      {/* ── PASO 2: FOTO ── */}
-      {step === 'photo' && (
+      {/* ── PASO FOTO 1: PEDIR ALTURA PRIMERO ── */}
+      {step === 'photo_height' && (
         <div className="animate-fade-in flex flex-col items-center gap-lg" style={{ maxWidth: 360, width: '100%' }}>
-          <div style={{ fontSize: '3.5rem' }}>📸</div>
+          <div style={{ fontSize: '3rem' }}>📏</div>
           <div>
-            <h1 className="font-display text-xl font-semibold text-primary" style={{ marginBottom: 8 }}>
-              Ahora la foto
+            <h1 className="font-display text-xl font-semibold text-primary" style={{ marginBottom: 6 }}>
+              Ingresá tu altura
             </h1>
-            <p className="text-sm text-muted" style={{ lineHeight: 1.7 }}>
-              Altura registrada: <strong className="text-primary">{alturaInput} cm</strong>
+            <p className="text-sm text-muted">
+              Necesaria para convertir la foto en centímetros reales.
             </p>
           </div>
 
-          <div className="glass flex flex-col gap-sm" style={{ padding: 'var(--space-md)', width: '100%', textAlign: 'left' }}>
-            {[
-              ['📐', 'Parate derecha, cuerpo entero visible de cabeza a pies'],
-              ['💡', 'Buena iluminación, fondo claro si podés'],
-              ['👙', 'Ropa ajustada da mejores medidas'],
-              ['⏱️', 'Primera vez tarda ~30 seg descargando modelos'],
-            ].map(([icon, text]) => (
-              <div key={text} className="flex items-center gap-sm">
-                <span style={{ fontSize: '1rem', flexShrink: 0 }}>{icon}</span>
-                <span className="text-sm text-muted">{text}</span>
-              </div>
-            ))}
+          <div className="glass flex flex-col gap-sm" style={{ padding: 'var(--space-lg)', width: '100%' }}>
+            <label className="text-xs text-muted uppercase tracking-wide text-left">
+              Altura (cm)
+            </label>
+            <div style={{ position: 'relative' }}>
+              <input
+                type="number"
+                inputMode="numeric"
+                className="input"
+                value={measurements.altura_cm || ''}
+                onChange={e => handleHeightChange(parseInt(e.target.value, 10))}
+                placeholder="165"
+              />
+              <span style={{ position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', color: 'var(--clr-text-3)' }}>cm</span>
+            </div>
           </div>
 
           <div className="flex flex-col gap-sm w-full">
-            <button id="btn-take-photo" className="btn btn-primary w-full"
-              onClick={() => cameraInputRef.current?.click()}>
-              📸 Sacarme una foto
+            <button
+              className="btn btn-primary w-full"
+              disabled={!measurements.altura_cm || measurements.altura_cm < 120 || measurements.altura_cm > 220}
+              onClick={() => setStep('photo_capture')}
+            >
+              Siguiente → Tomar Foto
             </button>
-            <button id="btn-choose-photo" className="btn btn-secondary w-full"
-              onClick={() => galleryInputRef.current?.click()}>
-              Elegir de la galería
+            <button className="btn btn-ghost btn-sm" onClick={() => setStep('choose_mode')}>
+              ← Cambiar modo
             </button>
-            <button className="btn btn-ghost btn-sm"
-              onClick={() => setStep('height')}>
+          </div>
+        </div>
+      )}
+
+      {/* ── PASO FOTO 2: TOMAR O SELECCIONAR FOTO ── */}
+      {step === 'photo_capture' && (
+        <div className="animate-fade-in flex flex-col items-center gap-lg" style={{ maxWidth: 360, width: '100%' }}>
+          <div style={{ fontSize: '3rem' }}>📸</div>
+          <div>
+            <h1 className="font-display text-xl font-semibold text-primary" style={{ marginBottom: 6 }}>
+              Sacate una foto
+            </h1>
+            <p className="text-sm text-muted">
+              Altura: <strong className="text-primary">{measurements.altura_cm} cm</strong>
+            </p>
+          </div>
+
+          <div className="glass flex flex-col gap-xs" style={{ padding: 'var(--space-md)', width: '100%', textAlign: 'left' }}>
+            <p className="text-xs text-muted">💡 Parate recta, cuerpo completo visible de cabeza a pies.</p>
+            <p className="text-xs text-muted">🔒 Tu foto nunca sale del dispositivo.</p>
+          </div>
+
+          <div className="flex flex-col gap-sm w-full">
+            <button className="btn btn-primary w-full" onClick={() => cameraInputRef.current?.click()}>
+              📸 Sacar foto ahora
+            </button>
+            <button className="btn btn-secondary w-full" onClick={() => galleryInputRef.current?.click()}>
+              🖼️ Elegir de la galería
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setStep('photo_height')}>
               ← Cambiar altura
             </button>
           </div>
@@ -328,68 +394,102 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
         <div className="animate-fade-in flex flex-col items-center gap-lg" style={{ maxWidth: 320, width: '100%' }}>
           <div className="spinner spinner-lg animate-pulse-glow" />
           <div>
-            <h2 className="font-display text-xl font-semibold" style={{ marginBottom: 8 }}>Analizando…</h2>
-            <p className="text-sm text-muted" style={{ lineHeight: 1.6 }}>{progressLabel}</p>
+            <h2 className="font-display text-xl font-semibold" style={{ marginBottom: 6 }}>Procesando…</h2>
+            <p className="text-sm text-muted">{progressLabel}</p>
           </div>
           <div style={{ width: '100%', height: 6, background: 'var(--clr-surface-3)', borderRadius: 3, overflow: 'hidden' }}>
-            <div style={{
-              height: '100%', width: `${progress}%`,
-              background: 'linear-gradient(90deg, var(--clr-primary-dim), var(--clr-primary))',
-              borderRadius: 3, transition: 'width 0.5s var(--ease-out)',
-            }} />
+            <div style={{ height: '100%', width: `${progress}%`, background: 'var(--clr-primary)', transition: 'width 0.4s' }} />
           </div>
-          <p className="text-xs text-dimmed" style={{ lineHeight: 1.6 }}>
-            Todo se procesa en tu dispositivo.<br />La primera vez descarga ~40 MB de modelos de IA.<br /><strong>No cierres la app.</strong>
-          </p>
         </div>
       )}
 
-      {/* ── PREVIEW ── */}
-      {step === 'preview' && measurements && realMeasurements && (
-        <div className="animate-fade-in flex flex-col items-center gap-lg" style={{ maxWidth: 360, width: '100%' }}>
-          <h2 className="font-display text-xl font-semibold text-primary">¡Tu maniquí está listo!</h2>
-
-          {/* Canvas mannequin */}
-          <div style={{
-            position: 'relative', width: 200, height: 360,
-            borderRadius: 'var(--radius-lg)', overflow: 'hidden',
-            border: '1px solid var(--clr-border)',
-            background: 'linear-gradient(180deg, var(--clr-surface-2) 0%, var(--clr-surface-3) 100%)',
-            boxShadow: 'var(--shadow-glow)',
-          }}>
-            <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} />
+      {/* ── EDITOR Y PREVIEW DE MANIQUÍ (EDITABLE) ── */}
+      {step === 'editor' && (
+        <div className="animate-fade-in flex flex-col items-center gap-md" style={{ maxWidth: 440, width: '100%' }}>
+          <div className="flex justify-between items-center w-full">
+            <h2 className="font-display text-lg font-semibold text-primary">
+              Personalizá tu maniquí
+            </h2>
+            <button className="btn btn-ghost btn-sm" onClick={() => setStep('choose_mode')}>
+              Reempezar
+            </button>
           </div>
 
-          {/* Real measurements in cm */}
-          <div className="glass" style={{ padding: 'var(--space-md)', width: '100%' }}>
-            <p className="text-xs text-dimmed uppercase tracking-wide" style={{ marginBottom: 12 }}>
-              Medidas estimadas
-            </p>
-            <div className="flex flex-col gap-xs">
+          {/* Grid Layout: Canvas Left, Sliders Right */}
+          <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 'var(--space-md)', width: '100%', alignItems: 'start' }}>
+
+            {/* Mannequin Canvas Container */}
+            <div className="flex flex-col items-center gap-xs">
+              <div style={{
+                position: 'relative',
+                width: 160,
+                height: 320,
+                borderRadius: 'var(--radius-md)',
+                overflow: 'hidden',
+                border: '1px solid var(--clr-border)',
+                background: 'linear-gradient(180deg, var(--clr-surface-2) 0%, var(--clr-surface-3) 100%)',
+                boxShadow: 'var(--shadow-glow)',
+              }}>
+                <canvas ref={canvasRef} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+              </div>
+
+              {/* Face photo button below canvas */}
+              <button
+                className="btn btn-secondary btn-sm w-full"
+                onClick={() => faceInputRef.current?.click()}
+                style={{ fontSize: '0.75rem', padding: '6px 8px' }}
+              >
+                {facePhotoUrl ? '👤 Cambiar rostro' : '📷 Agregar rostro'}
+              </button>
+              {facePhotoUrl && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setFacePhotoUrl(null)}
+                  style={{ fontSize: '0.7rem', color: 'var(--clr-danger)' }}
+                >
+                  Quitar rostro
+                </button>
+              )}
+            </div>
+
+            {/* Controls / Form */}
+            <div className="glass flex flex-col gap-xs" style={{ padding: 'var(--space-sm) var(--space-md)', width: '100%' }}>
               {[
-                ['📏 Altura',   realMeasurements.altura_cm],
-                ['↔️ Hombros',  realMeasurements.hombros_cm],
-                ['〰️ Cintura',  realMeasurements.cintura_cm],
-                ['〰️ Cadera',   realMeasurements.cadera_cm],
-              ].map(([label, val]) => (
-                <div key={label as string} className="flex justify-between items-center" style={{ padding: '6px 0', borderBottom: '1px solid var(--clr-border)' }}>
-                  <span className="text-sm text-muted">{label as string}</span>
-                  <span className="text-sm font-semibold text-primary">{val} cm</span>
+                { label: 'Altura', key: 'altura_cm' as const, min: 130, max: 210 },
+                { label: 'Hombros', key: 'hombros_cm' as const, min: 25, max: 60 },
+                { label: 'Cintura', key: 'cintura_cm' as const, min: 45, max: 130 },
+                { label: 'Cadera', key: 'cadera_cm' as const, min: 60, max: 150 },
+                { label: 'Largo Torso', key: 'largo_torso_cm' as const, min: 30, max: 70 },
+                { label: 'Largo Piernas', key: 'largo_piernas_cm' as const, min: 50, max: 110 },
+              ].map(item => (
+                <div key={item.key} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-muted font-medium">{item.label}</span>
+                    <span className="text-primary font-semibold">{measurements[item.key]} cm</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={item.min}
+                    max={item.max}
+                    value={measurements[item.key]}
+                    onChange={e => updateMeasurement(item.key, parseInt(e.target.value, 10))}
+                    style={{
+                      width: '100%',
+                      accentColor: 'var(--clr-primary)',
+                      cursor: 'pointer',
+                      height: 4,
+                    }}
+                  />
                 </div>
               ))}
             </div>
-            <p className="text-xs text-dimmed" style={{ marginTop: 10, lineHeight: 1.5 }}>
-              Las medidas son estimaciones basadas en la foto + tu altura de {realMeasurements.altura_cm} cm.
-              Se usan para ajustar la ropa al vestidor.
-            </p>
+
           </div>
 
-          <div className="flex flex-col gap-sm w-full">
+          {/* Action buttons */}
+          <div className="flex flex-col gap-xs w-full" style={{ marginTop: 'var(--space-xs)' }}>
             <button id="btn-save-mannequin" className="btn btn-primary w-full" onClick={saveMannequin}>
-              Guardar y continuar ✨
-            </button>
-            <button className="btn btn-ghost btn-sm" onClick={reset}>
-              Volver a empezar
+              Guardar maniquí ✨
             </button>
           </div>
         </div>
@@ -401,12 +501,12 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
           {step === 'done' ? (
             <>
               <div style={{ fontSize: '3rem' }}>✅</div>
-              <h2 className="font-display text-xl font-semibold text-primary">¡Listo! Empecemos.</h2>
+              <h2 className="font-display text-xl font-semibold text-primary">¡Maniquí guardado!</h2>
             </>
           ) : (
             <>
               <div className="spinner spinner-lg" />
-              <p className="text-sm text-muted">Guardando tu maniquí…</p>
+              <p className="text-sm text-muted">Guardando tu maniquí y rostro…</p>
             </>
           )}
         </div>
@@ -416,14 +516,12 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
       {step === 'error' && (
         <div className="animate-fade-in flex flex-col items-center gap-lg" style={{ maxWidth: 320, width: '100%' }}>
           <div style={{ fontSize: '2.5rem' }}>⚠️</div>
-          <h2 className="font-display text-lg font-semibold" style={{ color: 'var(--clr-danger)' }}>
-            Algo salió mal
-          </h2>
+          <h2 className="font-display text-lg font-semibold" style={{ color: 'var(--clr-danger)' }}>Algo salió mal</h2>
           <div className="glass-sm" style={{ padding: 'var(--space-md)', width: '100%' }}>
-            <p className="text-sm text-muted" style={{ lineHeight: 1.6 }}>{errorMsg}</p>
+            <p className="text-sm text-muted">{errorMsg}</p>
           </div>
-          <button id="btn-retry" className="btn btn-primary w-full" onClick={reset}>
-            Intentar de nuevo
+          <button className="btn btn-primary w-full" onClick={() => setStep('choose_mode')}>
+            Volver al inicio
           </button>
         </div>
       )}
@@ -431,61 +529,86 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
   )
 }
 
-/** Fallback mannequin drawing when MediaPipe landmarks are unavailable */
-function drawFallbackMannequin(canvas: HTMLCanvasElement, real: RealMeasurements) {
+/**
+ * Draws the stylized mannequin onto canvas with real cm parameters + optional face avatar overlay
+ */
+function drawMannequinWithFace(
+  canvas: HTMLCanvasElement,
+  m: RealMeasurements,
+  facePhotoUrl: string | null
+) {
   const ctx = canvas.getContext('2d')
   if (!ctx) return
-  const W = canvas.width, H = canvas.height
+
+  canvas.width = 400
+  canvas.height = 700
+  const W = canvas.width
+  const H = canvas.height
   ctx.clearRect(0, 0, W, H)
+
   const cx = W / 2
+  const scale = H / (m.altura_cm || 165)
 
-  // Scale based on real measurements
-  const scale = H / (real.altura_cm || 165)
-  const shoulderW = (real.hombros_cm * scale) / 2
-  const waistW    = (real.cintura_cm  * scale) / 2
-  const hipW      = (real.cadera_cm   * scale) / 2
-  const torsoH    = real.largo_torso_cm  * scale
-  const legH      = real.largo_piernas_cm * scale
+  const shoulderW = Math.max(25, (m.hombros_cm * scale) / 2)
+  const waistW    = Math.max(20, (m.cintura_cm * scale) / 2)
+  const hipW      = Math.max(25, (m.cadera_cm * scale) / 2)
+  const torsoH    = Math.max(40, m.largo_torso_cm * scale)
+  const legH      = Math.max(60, m.largo_piernas_cm * scale)
 
-  const headR     = shoulderW * 0.5
-  const headY     = H * 0.08 + headR
-  const shoulderY = headY + headR * 1.6
+  const headR     = Math.max(16, shoulderW * 0.48)
+  const headY     = H * 0.10 + headR
+  const shoulderY = headY + headR * 1.5
   const waistY    = shoulderY + torsoH * 0.45
   const hipY      = shoulderY + torsoH
-  const ankleY    = hipY + legH
+  const ankleY    = Math.min(H * 0.92, hipY + legH)
 
+  // Body gradient
   const grad = ctx.createLinearGradient(0, headY, 0, ankleY)
-  grad.addColorStop(0,   'rgba(210, 185, 205, 0.95)')
+  grad.addColorStop(0,   'rgba(215, 188, 208, 0.95)')
   grad.addColorStop(0.5, 'rgba(185, 155, 178, 0.95)')
-  grad.addColorStop(1,   'rgba(155, 120, 148, 0.90)')
+  grad.addColorStop(1,   'rgba(150, 118, 144, 0.90)')
   ctx.fillStyle = grad
-  ctx.strokeStyle = 'rgba(255, 210, 240, 0.5)'
+  ctx.strokeStyle = 'rgba(255, 215, 240, 0.45)'
   ctx.lineWidth = 2
 
-  // Head
-  ctx.beginPath(); ctx.arc(cx, headY, headR, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
-
-  // Body
+  // 1. Draw Body Silhouette
   ctx.beginPath()
   ctx.moveTo(cx - shoulderW, shoulderY)
-  ctx.bezierCurveTo(cx - shoulderW - 8, waistY - torsoH * 0.1, cx - waistW, waistY, cx - hipW, hipY)
+  ctx.bezierCurveTo(cx - shoulderW - 6, waistY - torsoH * 0.15, cx - waistW, waistY, cx - hipW, hipY)
   ctx.lineTo(cx - hipW * 0.55, ankleY)
   ctx.lineTo(cx + hipW * 0.55, ankleY)
   ctx.lineTo(cx + hipW, hipY)
-  ctx.bezierCurveTo(cx + waistW, waistY, cx + shoulderW + 8, waistY - torsoH * 0.1, cx + shoulderW, shoulderY)
-  ctx.lineTo(cx + headR * 0.35, shoulderY - headR * 0.4)
-  ctx.lineTo(cx - headR * 0.35, shoulderY - headR * 0.4)
-  ctx.closePath(); ctx.fill(); ctx.stroke()
+  ctx.bezierCurveTo(cx + waistW, waistY, cx + shoulderW + 6, waistY - torsoH * 0.15, cx + shoulderW, shoulderY)
+  ctx.lineTo(cx + headR * 0.35, shoulderY - headR * 0.3)
+  ctx.lineTo(cx - headR * 0.35, shoulderY - headR * 0.3)
+  ctx.closePath()
+  ctx.fill()
+  ctx.stroke()
 
-  // Highlight
-  const hl = ctx.createRadialGradient(cx - shoulderW * 0.3, shoulderY + torsoH * 0.2, 2, cx, waistY, shoulderW * 2)
-  hl.addColorStop(0, 'rgba(255,240,255,0.18)')
-  hl.addColorStop(1, 'rgba(0,0,0,0)')
-  ctx.fillStyle = hl
-  ctx.beginPath()
-  ctx.moveTo(cx - shoulderW, shoulderY)
-  ctx.bezierCurveTo(cx - shoulderW - 8, waistY - torsoH * 0.1, cx - waistW, waistY, cx - hipW, hipY)
-  ctx.lineTo(cx + hipW, hipY)
-  ctx.bezierCurveTo(cx + waistW, waistY, cx + shoulderW + 8, waistY - torsoH * 0.1, cx + shoulderW, shoulderY)
-  ctx.closePath(); ctx.fill()
+  // 2. Draw Head (Face photo if uploaded, otherwise stylized head)
+  if (facePhotoUrl) {
+    const faceImg = new Image()
+    faceImg.crossOrigin = 'anonymous'
+    faceImg.onload = () => {
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+      ctx.clip()
+      ctx.drawImage(faceImg, cx - headR, headY - headR, headR * 2, headR * 2)
+      ctx.restore()
+
+      // Border around face avatar
+      ctx.beginPath()
+      ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+      ctx.strokeStyle = 'var(--clr-primary)'
+      ctx.lineWidth = 2.5
+      ctx.stroke()
+    }
+    faceImg.src = facePhotoUrl
+  } else {
+    ctx.beginPath()
+    ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
+  }
 }
