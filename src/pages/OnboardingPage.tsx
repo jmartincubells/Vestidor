@@ -120,14 +120,14 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
       // Convert or estimate
       let estimated: RealMeasurements
       if (bm && bm.altura_estimada > 0) {
-        const scale = heightCm / bm.altura_estimada
+        const hScale = heightCm / bm.altura_estimada
         estimated = {
           altura_cm: heightCm,
-          hombros_cm: Math.round(bm.ancho_hombros * scale * 100),
-          cintura_cm: Math.round(bm.cintura * scale * 100),
-          cadera_cm: Math.round(bm.cadera * scale * 100),
-          largo_torso_cm: Math.round(bm.largo_torso * scale * 100),
-          largo_piernas_cm: Math.round(bm.largo_piernas * scale * 100),
+          hombros_cm: Math.round(Math.max(28, Math.min(65, bm.ancho_hombros * hScale))),
+          cintura_cm: Math.round(Math.max(45, Math.min(130, bm.cintura * hScale * 2.2))),
+          cadera_cm:  Math.round(Math.max(60, Math.min(150, bm.cadera * hScale * 2.5))),
+          largo_torso_cm: Math.round(Math.max(30, Math.min(70, bm.largo_torso * hScale))),
+          largo_piernas_cm: Math.round(Math.max(50, Math.min(115, bm.largo_piernas * hScale))),
         }
       } else {
         const ratio = heightCm / 165
