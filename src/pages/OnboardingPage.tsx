@@ -67,7 +67,7 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
   const updateMeasurement = (key: keyof RealMeasurements, val: number) => {
     setMeasurements(prev => ({
       ...prev,
-      [key]: Math.max(10, Math.min(250, val || 0)),
+      [key]: Math.max(1, val || 0),
     }))
   }
 
@@ -463,34 +463,43 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
               )}
             </div>
 
-            {/* Controls / Form */}
+            {/* Controls / Form with direct numeric inputs */}
             <div className="glass flex flex-col gap-xs" style={{ padding: 'var(--space-sm) var(--space-md)', width: '100%' }}>
               {[
-                { label: 'Altura', key: 'altura_cm' as const, min: 130, max: 210 },
-                { label: 'Hombros', key: 'hombros_cm' as const, min: 25, max: 60 },
-                { label: 'Cintura', key: 'cintura_cm' as const, min: 45, max: 130 },
-                { label: 'Cadera', key: 'cadera_cm' as const, min: 60, max: 150 },
-                { label: 'Largo Torso', key: 'largo_torso_cm' as const, min: 30, max: 70 },
-                { label: 'Largo Piernas', key: 'largo_piernas_cm' as const, min: 50, max: 110 },
+                { label: 'Altura (cm)', key: 'altura_cm' as const },
+                { label: 'Hombros (cm)', key: 'hombros_cm' as const },
+                { label: 'Cintura (cm)', key: 'cintura_cm' as const },
+                { label: 'Cadera (cm)', key: 'cadera_cm' as const },
+                { label: 'Torso (cm)', key: 'largo_torso_cm' as const },
+                { label: 'Piernas (cm)', key: 'largo_piernas_cm' as const },
               ].map(item => (
-                <div key={item.key} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="text-muted font-medium">{item.label}</span>
-                    <span className="text-primary font-semibold">{measurements[item.key]} cm</span>
+                <div key={item.key} className="flex justify-between items-center" style={{ padding: '3px 0' }}>
+                  <span className="text-xs text-muted font-medium" style={{ minWidth: 80 }}>{item.label}</span>
+                  
+                  <div className="flex items-center gap-xs">
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => updateMeasurement(item.key, (measurements[item.key] || 0) - 1)}
+                      style={{ padding: '2px 8px', fontSize: '0.9rem', lineHeight: 1, height: 28, minWidth: 28 }}
+                    >
+                      -
+                    </button>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      className="input text-center font-semibold text-primary"
+                      value={measurements[item.key] || ''}
+                      onChange={e => updateMeasurement(item.key, parseInt(e.target.value, 10) || 0)}
+                      style={{ width: 68, padding: '4px 6px', height: 28, fontSize: '0.85rem' }}
+                    />
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => updateMeasurement(item.key, (measurements[item.key] || 0) + 1)}
+                      style={{ padding: '2px 8px', fontSize: '0.9rem', lineHeight: 1, height: 28, minWidth: 28 }}
+                    >
+                      +
+                    </button>
                   </div>
-                  <input
-                    type="range"
-                    min={item.min}
-                    max={item.max}
-                    value={measurements[item.key]}
-                    onChange={e => updateMeasurement(item.key, parseInt(e.target.value, 10))}
-                    style={{
-                      width: '100%',
-                      accentColor: 'var(--clr-primary)',
-                      cursor: 'pointer',
-                      height: 4,
-                    }}
-                  />
                 </div>
               ))}
             </div>
