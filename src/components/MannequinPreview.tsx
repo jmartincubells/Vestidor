@@ -5,6 +5,7 @@ interface MannequinPreviewProps {
   measurements: Partial<RealMeasurements> | null | undefined
   facePhotoUrl?: string | null
   userBodyCutout?: string | null
+  showOverlay?: boolean
   style?: React.CSSProperties
   className?: string
 }
@@ -13,12 +14,13 @@ export function MannequinPreview({
   measurements,
   facePhotoUrl,
   userBodyCutout,
+  showOverlay = true,
   style,
   className,
 }: MannequinPreviewProps) {
   const maskId = useId()
-  
-  // Strict sanitization & fallbacks to prevent NaN in SVG path coordinates
+
+  // Strict sanitization & fallbacks to prevent NaN
   const heightCm = Math.max(120, Math.min(220, Number(measurements?.altura_cm) || 165))
   const hombrosCm = Math.max(25, Math.min(70, Number(measurements?.hombros_cm) || 38))
   const cinturaCm = Math.max(40, Math.min(140, Number(measurements?.cintura_cm) || 70))
@@ -37,32 +39,66 @@ export function MannequinPreview({
   const flatWaist = cinturaCm * 0.32
   const flatHip = caderaCm * 0.32
 
-  const shoulderW = Math.max(35, (flatShoulder * scale) / 2)
-  const waistW = Math.max(25, (flatWaist * scale) / 2)
-  const hipW = Math.max(35, (flatHip * scale) / 2)
+  const shoulderW = Math.max(32, (flatShoulder * scale) / 2)
+  const waistW = Math.max(24, (flatWaist * scale) / 2)
+  const hipW = Math.max(32, (flatHip * scale) / 2)
   const torsoH = Math.max(70, torsoCm * scale)
   const legH = Math.max(110, piernasCm * scale)
 
-  const headR = Math.max(24, shoulderW * 0.45)
-  const startY = H * 0.06
+  const headR = Math.max(22, shoulderW * 0.4)
+  const startY = H * 0.05
   const headY = startY + headR
-  const shoulderY = headY + headR * 1.4
+  const shoulderY = headY + headR * 1.35
   const waistY = shoulderY + torsoH * 0.45
   const hipY = shoulderY + torsoH
+  const crotchY = hipY + torsoH * 0.16
+  const kneeY = crotchY + (legH - torsoH * 0.16) * 0.48
   const ankleY = Math.min(H * 0.94, hipY + legH)
 
-  // Construct SVG Bezier path for mannequin body
-  const bodyPath = `
+  const outerLegShift = Math.max(10, hipW * 0.5)
+  const innerLegGap = Math.max(6, shoulderW * 0.1)
+  const armThickness = Math.max(8, shoulderW * 0.18)
+  const handY = Math.min(ankleY - 20, hipY + torsoH * 0.22)
+
+  // 1. Torso & Separated Legs Path
+  const bodyAndLegsPath = `
     M ${cx - shoulderW} ${shoulderY}
-    C ${cx - shoulderW - 4} ${waistY - torsoH * 0.15}, ${cx - waistW} ${waistY}, ${cx - hipW} ${hipY}
-    L ${cx - hipW * 0.55} ${ankleY}
-    L ${cx + hipW * 0.55} ${ankleY}
-    L ${cx + hipW} ${hipY}
-    C ${cx + waistW} ${waistY}, ${cx + shoulderW + 4} ${waistY - torsoH * 0.15}, ${cx + shoulderW} ${shoulderY}
-    L ${cx + headR * 0.35} ${shoulderY - headR * 0.25}
+    C ${cx - shoulderW - 2} ${waistY - torsoH * 0.2}, ${cx - waistW} ${waistY}, ${cx - hipW} ${hipY}
+    C ${cx - hipW} ${hipY + (crotchY - hipY) * 0.5}, ${cx - outerLegShift - 10} ${kneeY}, ${cx - outerLegShift - 6} ${ankleY}
+    L ${cx - innerLegGap - 12} ${ankleY}
+    C ${cx - innerLegGap - 6} ${kneeY}, ${cx - innerLegGap - 2} ${crotchY + 20}, ${cx - 3} ${crotchY}
+    C ${cx - 1} ${crotchY - 6}, ${cx + 1} ${crotchY - 6}, ${cx + 3} ${crotchY}
+    C ${cx + innerLegGap + 2} ${crotchY + 20}, ${cx + innerLegGap + 6} ${kneeY}, ${cx + innerLegGap + 12} ${ankleY}
+    L ${cx + outerLegShift + 6} ${ankleY}
+    C ${cx + outerLegShift + 10} ${kneeY}, ${cx + hipW} ${hipY + (crotchY - hipY) * 0.5}, ${cx + hipW} ${hipY}
+    C ${cx + waistW} ${waistY}, ${cx + shoulderW + 2} ${waistY - torsoH * 0.2}, ${cx + shoulderW} ${shoulderY}
+    C ${cx + shoulderW * 0.6} ${shoulderY - 4}, ${cx + headR * 0.4} ${shoulderY - headR * 0.3}, ${cx + headR * 0.35} ${shoulderY - headR * 0.25}
     L ${cx - headR * 0.35} ${shoulderY - headR * 0.25}
+    C ${cx - headR * 0.4} ${shoulderY - headR * 0.3}, ${cx - shoulderW * 0.6} ${shoulderY - 4}, ${cx - shoulderW} ${shoulderY}
     Z
   `
+
+  // 2. Left Arm Path (Detailed contour)
+  const leftArmPath = `
+    M ${cx - shoulderW} ${shoulderY + 2}
+    C ${cx - shoulderW - 14} ${shoulderY + torsoH * 0.2}, ${cx - shoulderW - 16} ${waistY}, ${cx - hipW - 10} ${handY}
+    C ${cx - hipW - 13} ${handY + 12}, ${cx - hipW - 1} ${handY + 12}, ${cx - hipW + 1} ${handY}
+    C ${cx - waistW - armThickness} ${waistY + 10}, ${cx - shoulderW + armThickness * 0.8} ${shoulderY + torsoH * 0.25}, ${cx - shoulderW + armThickness * 1.5} ${shoulderY + 14}
+    Z
+  `
+
+  // 3. Right Arm Path (Mirror)
+  const rightArmPath = `
+    M ${cx + shoulderW} ${shoulderY + 2}
+    C ${cx + shoulderW + 14} ${shoulderY + torsoH * 0.2}, ${cx + shoulderW + 16} ${waistY}, ${cx + hipW + 10} ${handY}
+    C ${cx + hipW + 13} ${handY + 12}, ${cx + hipW + 1} ${handY + 12}, ${cx + hipW - 1} ${handY}
+    C ${cx + waistW + armThickness} ${waistY + 10}, ${cx + shoulderW - armThickness * 0.8} ${shoulderY + torsoH * 0.25}, ${cx + shoulderW - armThickness * 1.5} ${shoulderY + 14}
+    Z
+  `
+
+  // Fill opacity when overlaying over real body photo
+  const fillStyle = userBodyCutout && showOverlay ? 'rgba(215, 175, 200, 0.40)' : `url(#bodyGrad-${maskId})`
+  const strokeStyle = userBodyCutout && showOverlay ? 'rgba(255, 240, 255, 0.95)' : 'rgba(255, 230, 248, 0.8)'
 
   return (
     <svg
@@ -77,8 +113,8 @@ export function MannequinPreview({
     >
       <defs>
         {/* Glow Halo Background */}
-        <radialGradient id={`halo-${maskId}`} cx="50%" cy="50%" r="45%">
-          <stop offset="0%" stopColor="rgba(201, 160, 180, 0.3)" />
+        <radialGradient id={`halo-${maskId}`} cx="50%" cy="50%" r="48%">
+          <stop offset="0%" stopColor="rgba(201, 160, 180, 0.35)" />
           <stop offset="100%" stopColor="rgba(0, 0, 0, 0)" />
         </radialGradient>
 
@@ -100,7 +136,8 @@ export function MannequinPreview({
       {/* Halo Background */}
       <rect width={W} height={H} fill={`url(#halo-${maskId})`} />
 
-      {userBodyCutout ? (
+      {/* Real Body Photo Cutout Layer (Rendered in background if present) */}
+      {userBodyCutout && showOverlay && (
         <image
           href={userBodyCutout}
           x="20"
@@ -108,58 +145,79 @@ export function MannequinPreview({
           width="360"
           height="660"
           preserveAspectRatio="xMidYMid meet"
+          opacity={0.65}
         />
-      ) : (
-        <>
-          {/* Mannequin Body Silhouette */}
-          <path
-            d={bodyPath}
-            fill={`url(#bodyGrad-${maskId})`}
-            stroke="rgba(255, 230, 248, 0.8)"
-            strokeWidth="2.5"
-          />
+      )}
 
-          {/* Head Circle + Optional Face Photo Overlay */}
-          {facePhotoUrl ? (
-            <g>
-              <circle
-                cx={cx}
-                cy={headY}
-                r={headR}
-                fill={`url(#bodyGrad-${maskId})`}
-                stroke="rgba(255, 230, 248, 0.8)"
-                strokeWidth="2.5"
-              />
-              <image
-                href={facePhotoUrl}
-                x={cx - headR}
-                y={headY - headR}
-                width={headR * 2}
-                height={headR * 2}
-                clipPath={`url(#faceClip-${maskId})`}
-                preserveAspectRatio="xMidYMid slice"
-              />
-              <circle
-                cx={cx}
-                cy={headY}
-                r={headR}
-                fill="none"
-                stroke="#c9a0b4"
-                strokeWidth="3"
-              />
-            </g>
-          ) : (
+      {/* Vector Mannequin Silhouette Layer (Torso, Arms, Separated Legs, Head) */}
+      <g>
+        {/* Torso & Separated Legs */}
+        <path
+          d={bodyAndLegsPath}
+          fill={fillStyle}
+          stroke={strokeStyle}
+          strokeWidth="2.5"
+          strokeLinejoin="round"
+        />
+
+        {/* Left Arm */}
+        <path
+          d={leftArmPath}
+          fill={fillStyle}
+          stroke={strokeStyle}
+          strokeWidth="2.5"
+          strokeLinejoin="round"
+        />
+
+        {/* Right Arm */}
+        <path
+          d={rightArmPath}
+          fill={fillStyle}
+          stroke={strokeStyle}
+          strokeWidth="2.5"
+          strokeLinejoin="round"
+        />
+
+        {/* Head Circle + Optional Face Photo Overlay */}
+        {facePhotoUrl ? (
+          <g>
             <circle
               cx={cx}
               cy={headY}
               r={headR}
-              fill={`url(#bodyGrad-${maskId})`}
-              stroke="rgba(255, 230, 248, 0.8)"
+              fill={fillStyle}
+              stroke={strokeStyle}
               strokeWidth="2.5"
             />
-          )}
-        </>
-      )}
+            <image
+              href={facePhotoUrl}
+              x={cx - headR}
+              y={headY - headR}
+              width={headR * 2}
+              height={headR * 2}
+              clipPath={`url(#faceClip-${maskId})`}
+              preserveAspectRatio="xMidYMid slice"
+            />
+            <circle
+              cx={cx}
+              cy={headY}
+              r={headR}
+              fill="none"
+              stroke="#c9a0b4"
+              strokeWidth="3"
+            />
+          </g>
+        ) : (
+          <circle
+            cx={cx}
+            cy={headY}
+            r={headR}
+            fill={fillStyle}
+            stroke={strokeStyle}
+            strokeWidth="2.5"
+          />
+        )}
+      </g>
     </svg>
   )
 }
@@ -198,19 +256,26 @@ export function exportMannequinToDataUrl(
     const flatWaist = cinturaCm * 0.32
     const flatHip = caderaCm * 0.32
 
-    const shoulderW = Math.max(35, (flatShoulder * scale) / 2)
-    const waistW = Math.max(25, (flatWaist * scale) / 2)
-    const hipW = Math.max(35, (flatHip * scale) / 2)
+    const shoulderW = Math.max(32, (flatShoulder * scale) / 2)
+    const waistW = Math.max(24, (flatWaist * scale) / 2)
+    const hipW = Math.max(32, (flatHip * scale) / 2)
     const torsoH = Math.max(70, torsoCm * scale)
     const legH = Math.max(110, piernasCm * scale)
 
-    const headR = Math.max(24, shoulderW * 0.45)
-    const startY = H * 0.06
+    const headR = Math.max(22, shoulderW * 0.4)
+    const startY = H * 0.05
     const headY = startY + headR
-    const shoulderY = headY + headR * 1.4
+    const shoulderY = headY + headR * 1.35
     const waistY = shoulderY + torsoH * 0.45
     const hipY = shoulderY + torsoH
+    const crotchY = hipY + torsoH * 0.16
+    const kneeY = crotchY + (legH - torsoH * 0.16) * 0.48
     const ankleY = Math.min(H * 0.94, hipY + legH)
+
+    const outerLegShift = Math.max(10, hipW * 0.5)
+    const innerLegGap = Math.max(6, shoulderW * 0.1)
+    const armThickness = Math.max(8, shoulderW * 0.18)
+    const handY = Math.min(ankleY - 20, hipY + torsoH * 0.22)
 
     // Halo background
     const halo = ctx.createRadialGradient(cx, H * 0.5, 20, cx, H * 0.5, W * 0.45)
@@ -236,18 +301,46 @@ export function exportMannequinToDataUrl(
     ctx.lineWidth = 2.5
 
     // Body path
-    ctx.beginPath()
-    ctx.moveTo(cx - shoulderW, shoulderY)
-    ctx.bezierCurveTo(cx - shoulderW - 4, waistY - torsoH * 0.15, cx - waistW, waistY, cx - hipW, hipY)
-    ctx.lineTo(cx - hipW * 0.55, ankleY)
-    ctx.lineTo(cx + hipW * 0.55, ankleY)
-    ctx.lineTo(cx + hipW, hipY)
-    ctx.bezierCurveTo(cx + waistW, waistY, cx + shoulderW + 4, waistY - torsoH * 0.15, cx + shoulderW, shoulderY)
-    ctx.lineTo(cx + headR * 0.35, shoulderY - headR * 0.25)
-    ctx.lineTo(cx - headR * 0.35, shoulderY - headR * 0.25)
-    ctx.closePath()
-    ctx.fill()
-    ctx.stroke()
+    const pBody = new Path2D(`
+      M ${cx - shoulderW} ${shoulderY}
+      C ${cx - shoulderW - 2} ${waistY - torsoH * 0.2}, ${cx - waistW} ${waistY}, ${cx - hipW} ${hipY}
+      C ${cx - hipW} ${hipY + (crotchY - hipY) * 0.5}, ${cx - outerLegShift - 10} ${kneeY}, ${cx - outerLegShift - 6} ${ankleY}
+      L ${cx - innerLegGap - 12} ${ankleY}
+      C ${cx - innerLegGap - 6} ${kneeY}, ${cx - innerLegGap - 2} ${crotchY + 20}, ${cx - 3} ${crotchY}
+      C ${cx - 1} ${crotchY - 6}, ${cx + 1} ${crotchY - 6}, ${cx + 3} ${crotchY}
+      C ${cx + innerLegGap + 2} ${crotchY + 20}, ${cx + innerLegGap + 6} ${kneeY}, ${cx + innerLegGap + 12} ${ankleY}
+      L ${cx + outerLegShift + 6} ${ankleY}
+      C ${cx + outerLegShift + 10} ${kneeY}, ${cx + hipW} ${hipY + (crotchY - hipY) * 0.5}, ${cx + hipW} ${hipY}
+      C ${cx + waistW} ${waistY}, ${cx + shoulderW + 2} ${waistY - torsoH * 0.2}, ${cx + shoulderW} ${shoulderY}
+      C ${cx + shoulderW * 0.6} ${shoulderY - 4}, ${cx + headR * 0.4} ${shoulderY - headR * 0.3}, ${cx + headR * 0.35} ${shoulderY - headR * 0.25}
+      L ${cx - headR * 0.35} ${shoulderY - headR * 0.25}
+      C ${cx - headR * 0.4} ${shoulderY - headR * 0.3}, ${cx - shoulderW * 0.6} ${shoulderY - 4}, ${cx - shoulderW} ${shoulderY}
+      Z
+    `)
+    ctx.fill(pBody)
+    ctx.stroke(pBody)
+
+    // Left Arm
+    const pLArm = new Path2D(`
+      M ${cx - shoulderW} ${shoulderY + 2}
+      C ${cx - shoulderW - 14} ${shoulderY + torsoH * 0.2}, ${cx - shoulderW - 16} ${waistY}, ${cx - hipW - 10} ${handY}
+      C ${cx - hipW - 13} ${handY + 12}, ${cx - hipW - 1} ${handY + 12}, ${cx - hipW + 1} ${handY}
+      C ${cx - waistW - armThickness} ${waistY + 10}, ${cx - shoulderW + armThickness * 0.8} ${shoulderY + torsoH * 0.25}, ${cx - shoulderW + armThickness * 1.5} ${shoulderY + 14}
+      Z
+    `)
+    ctx.fill(pLArm)
+    ctx.stroke(pLArm)
+
+    // Right Arm
+    const pRArm = new Path2D(`
+      M ${cx + shoulderW} ${shoulderY + 2}
+      C ${cx + shoulderW + 14} ${shoulderY + torsoH * 0.2}, ${cx + shoulderW + 16} ${waistY}, ${cx + hipW + 10} ${handY}
+      C ${cx + hipW + 13} ${handY + 12}, ${cx + hipW + 1} ${handY + 12}, ${cx + hipW - 1} ${handY}
+      C ${cx + waistW + armThickness} ${waistY + 10}, ${cx + shoulderW - armThickness * 0.8} ${shoulderY + torsoH * 0.25}, ${cx + shoulderW - armThickness * 1.5} ${shoulderY + 14}
+      Z
+    `)
+    ctx.fill(pRArm)
+    ctx.stroke(pRArm)
 
     // Head
     ctx.beginPath()

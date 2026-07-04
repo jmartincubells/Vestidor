@@ -49,11 +49,15 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
   const [progress, setProgress] = useState(0)
   const [progressLabel, setProgressLabel] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
+  const [processingBody, setProcessingBody] = useState(false)
+  const [showOverlay, setShowOverlay] = useState(true)
 
   // File input refs
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const galleryInputRef = useRef<HTMLInputElement>(null)
   const faceInputRef = useRef<HTMLInputElement>(null)
+  const bodyInputRef = useRef<HTMLInputElement>(null)
+
 
   // Handle measurement changes with validation
   const updateMeasurement = (key: keyof RealMeasurements, val: number) => {
@@ -165,6 +169,23 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
     reader.readAsDataURL(file)
   }
 
+  // Body photo handler (for background cutout overlay alignment)
+  const handleBodyPhotoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setProcessingBody(true)
+    try {
+      const result = await removeImageBackground(file)
+      const b64 = await blobToBase64(result.blob)
+      setUserBodyCutout(`data:image/png;base64,${b64}`)
+      setShowOverlay(true)
+    } catch (err) {
+      console.error('Error processing body photo:', err)
+    } finally {
+      setProcessingBody(false)
+    }
+  }
+
   // Save to DB and Local Cache
   async function saveMannequin() {
     setStep('saving')
@@ -193,6 +214,7 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
           landmarks_json: {
             real_cm: measurements,
             face_photo_base64: facePhotoUrl,
+            body_cutout_base64: userBodyCutout,
           },
         })
         .select()
@@ -408,6 +430,9 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
       {/* ── EDITOR Y PREVIEW DE MANIQUÍ (EDITABLE) ── */}
       {step === 'editor' && (
         <div className="animate-fade-in flex flex-col items-center gap-md" style={{ maxWidth: 440, width: '100%' }}>
+          <input ref={faceInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFacePhotoSelect} />
+          <input ref={bodyInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleBodyPhotoSelect} />
+
           <div className="flex justify-between items-center w-full">
             <h2 className="font-display text-lg font-semibold text-primary">
               Personalizá tu maniquí
@@ -436,26 +461,62 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
                   measurements={measurements}
                   facePhotoUrl={facePhotoUrl}
                   userBodyCutout={userBodyCutout}
+                  showOverlay={showOverlay}
                 />
+                {processingBody && (
+                  <div style={{
+                    position: 'absolute',
+                    inset: 0,
+                    background: 'rgba(0,0,0,0.6)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    zIndex: 10,
+                  }}>
+                    <div className="spinner" />
+                    <span style={{ fontSize: '0.65rem', color: '#fff', textAlign: 'center' }}>Procesando foto…</span>
+                  </div>
+                )}
               </div>
 
-
-              {/* Face photo button below canvas */}
+              {/* Face photo button */}
               <button
                 className="btn btn-secondary btn-sm w-full"
                 onClick={() => faceInputRef.current?.click()}
-                style={{ fontSize: '0.75rem', padding: '6px 8px' }}
+                style={{ fontSize: '0.72rem', padding: '5px 8px' }}
               >
                 {facePhotoUrl ? '👤 Cambiar rostro' : '📷 Agregar rostro'}
               </button>
-              {facePhotoUrl && (
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => setFacePhotoUrl(null)}
-                  style={{ fontSize: '0.7rem', color: 'var(--clr-danger)' }}
-                >
-                  Quitar rostro
-                </button>
+
+              {/* Body photo button (background overlay) */}
+              <button
+                className="btn btn-secondary btn-sm w-full"
+                onClick={() => bodyInputRef.current?.click()}
+                disabled={processingBody}
+                style={{ fontSize: '0.72rem', padding: '5px 8px' }}
+              >
+                {userBodyCutout ? '📸 Cambiar foto cuerpo' : '📸 Foto cuerpo (fondo)'}
+              </button>
+
+              {userBodyCutout && (
+                <div className="flex items-center gap-xs w-full justify-between" style={{ marginTop: 2 }}>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setShowOverlay(!showOverlay)}
+                    style={{ fontSize: '0.65rem', padding: 2 }}
+                  >
+                    {showOverlay ? '👁️ Ocultar foto' : '👁️ Mostrar foto'}
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setUserBodyCutout(null)}
+                    style={{ fontSize: '0.65rem', color: 'var(--clr-danger)', padding: 2 }}
+                  >
+                    Quitar
+                  </button>
+                </div>
               )}
             </div>
 
