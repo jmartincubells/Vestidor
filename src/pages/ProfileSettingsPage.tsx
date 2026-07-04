@@ -110,21 +110,28 @@ export default function ProfileSettingsPage({ user }: ProfileSettingsPageProps) 
   const handleBodyPhotoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    setProcessingBody(true)
-    try {
-      showToast('Extrayendo silueta de tu foto de cuerpo…', 'info')
-      const result = await removeImageBackground(file)
-      const b64 = await blobToBase64(result.blob)
-      const fullDataUrl = `data:image/png;base64,${b64}`
-      setUserBodyCutout(fullDataUrl)
+
+    // Instant preview using FileReader
+    const reader = new FileReader()
+    reader.onload = async () => {
+      const rawUrl = reader.result as string
+      setUserBodyCutout(rawUrl)
       setShowOverlay(true)
-      showToast('¡Silueta recortada cargada! Ajustá tu maniquí sobre ella. ✨', 'success')
-    } catch (err) {
-      console.error('Error processing body photo:', err)
-      showToast('No se pudo procesar la foto del cuerpo', 'error')
-    } finally {
-      setProcessingBody(false)
+      setProcessingBody(true)
+
+      try {
+        const result = await removeImageBackground(file)
+        const b64 = await blobToBase64(result.blob)
+        setUserBodyCutout(`data:image/png;base64,${b64}`)
+        showToast('¡Silueta de cuerpo recortada lista! ✨', 'success')
+      } catch (err) {
+        console.warn('Background removal skipped, using photo overlay:', err)
+        showToast('Foto cargada en el fondo del maniquí ✨', 'success')
+      } finally {
+        setProcessingBody(false)
+      }
     }
+    reader.readAsDataURL(file)
   }
 
   async function handleSave() {

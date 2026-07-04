@@ -10,6 +10,24 @@ interface MannequinPreviewProps {
   className?: string
 }
 
+/**
+ * Ensures any base64 or URL string has a valid Data URL prefix for SVG <image> compatibility.
+ */
+function ensureDataUrl(src: string | null | undefined): string | null {
+  if (!src) return null
+  const trimmed = src.trim()
+  if (
+    trimmed.startsWith('data:') ||
+    trimmed.startsWith('blob:') ||
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://')
+  ) {
+    return trimmed
+  }
+  // Raw base64 string from database: add PNG data URL prefix
+  return `data:image/png;base64,${trimmed}`
+}
+
 export function MannequinPreview({
   measurements,
   facePhotoUrl,
@@ -19,6 +37,9 @@ export function MannequinPreview({
   className,
 }: MannequinPreviewProps) {
   const maskId = useId()
+
+  const cutoutUrl = ensureDataUrl(userBodyCutout)
+  const faceUrl = ensureDataUrl(facePhotoUrl)
 
   // Strict sanitization & fallbacks to prevent NaN
   const heightCm = Math.max(120, Math.min(220, Number(measurements?.altura_cm) || 165))
@@ -78,7 +99,7 @@ export function MannequinPreview({
     Z
   `
 
-  // 2. Left Arm Path (Detailed contour)
+  // 2. Left Arm Path
   const leftArmPath = `
     M ${cx - shoulderW} ${shoulderY + 2}
     C ${cx - shoulderW - 14} ${shoulderY + torsoH * 0.2}, ${cx - shoulderW - 16} ${waistY}, ${cx - hipW - 10} ${handY}
@@ -87,7 +108,7 @@ export function MannequinPreview({
     Z
   `
 
-  // 3. Right Arm Path (Mirror)
+  // 3. Right Arm Path
   const rightArmPath = `
     M ${cx + shoulderW} ${shoulderY + 2}
     C ${cx + shoulderW + 14} ${shoulderY + torsoH * 0.2}, ${cx + shoulderW + 16} ${waistY}, ${cx + hipW + 10} ${handY}
@@ -97,8 +118,9 @@ export function MannequinPreview({
   `
 
   // Fill opacity when overlaying over real body photo
-  const fillStyle = userBodyCutout && showOverlay ? 'rgba(215, 175, 200, 0.40)' : `url(#bodyGrad-${maskId})`
-  const strokeStyle = userBodyCutout && showOverlay ? 'rgba(255, 240, 255, 0.95)' : 'rgba(255, 230, 248, 0.8)'
+  const hasCutout = Boolean(cutoutUrl && showOverlay)
+  const fillStyle = hasCutout ? 'rgba(215, 175, 200, 0.40)' : `url(#bodyGrad-${maskId})`
+  const strokeStyle = hasCutout ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 230, 248, 0.8)'
 
   return (
     <svg
@@ -126,7 +148,7 @@ export function MannequinPreview({
         </linearGradient>
 
         {/* Circular clip for face photo */}
-        {facePhotoUrl && (
+        {faceUrl && (
           <clipPath id={`faceClip-${maskId}`}>
             <circle cx={cx} cy={headY} r={headR} />
           </clipPath>
@@ -137,15 +159,16 @@ export function MannequinPreview({
       <rect width={W} height={H} fill={`url(#halo-${maskId})`} />
 
       {/* Real Body Photo Cutout Layer (Rendered in background if present) */}
-      {userBodyCutout && showOverlay && (
+      {cutoutUrl && showOverlay && (
         <image
-          href={userBodyCutout}
+          href={cutoutUrl}
+          xlinkHref={cutoutUrl}
           x="20"
           y="20"
           width="360"
           height="660"
           preserveAspectRatio="xMidYMid meet"
-          opacity={0.65}
+          opacity={0.75}
         />
       )}
 
@@ -179,7 +202,7 @@ export function MannequinPreview({
         />
 
         {/* Head Circle + Optional Face Photo Overlay */}
-        {facePhotoUrl ? (
+        {faceUrl ? (
           <g>
             <circle
               cx={cx}
@@ -190,7 +213,8 @@ export function MannequinPreview({
               strokeWidth="2.5"
             />
             <image
-              href={facePhotoUrl}
+              href={faceUrl}
+              xlinkHref={faceUrl}
               x={cx - headR}
               y={headY - headR}
               width={headR * 2}
@@ -238,6 +262,9 @@ export function exportMannequinToDataUrl(
     const ctx = canvas.getContext('2d')
     if (!ctx) return ''
 
+    const cutoutUrl = ensureDataUrl(userBodyCutout)
+    const faceUrl = ensureDataUrl(facePhotoUrl)
+
     const heightCm = Math.max(120, Math.min(220, Number(measurements?.altura_cm) || 165))
     const hombrosCm = Math.max(25, Math.min(70, Number(measurements?.hombros_cm) || 38))
     const cinturaCm = Math.max(40, Math.min(140, Number(measurements?.cintura_cm) || 70))
@@ -284,9 +311,9 @@ export function exportMannequinToDataUrl(
     ctx.fillStyle = halo
     ctx.fillRect(0, 0, W, H)
 
-    if (userBodyCutout) {
+    if (cutoutUrl) {
       const img = new Image()
-      img.src = userBodyCutout
+      img.src = cutoutUrl
       ctx.drawImage(img, 20, 20, 360, 660)
       return canvas.toDataURL('image/png')
     }
@@ -348,9 +375,9 @@ export function exportMannequinToDataUrl(
     ctx.fill()
     ctx.stroke()
 
-    if (facePhotoUrl) {
+    if (faceUrl) {
       const faceImg = new Image()
-      faceImg.src = facePhotoUrl
+      faceImg.src = faceUrl
       ctx.save()
       ctx.beginPath()
       ctx.arc(cx, headY, headR, 0, Math.PI * 2)

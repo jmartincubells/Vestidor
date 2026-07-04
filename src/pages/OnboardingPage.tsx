@@ -173,17 +173,26 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
   const handleBodyPhotoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    setProcessingBody(true)
-    try {
-      const result = await removeImageBackground(file)
-      const b64 = await blobToBase64(result.blob)
-      setUserBodyCutout(`data:image/png;base64,${b64}`)
+
+    // Instant preview using FileReader
+    const reader = new FileReader()
+    reader.onload = async () => {
+      const rawUrl = reader.result as string
+      setUserBodyCutout(rawUrl)
       setShowOverlay(true)
-    } catch (err) {
-      console.error('Error processing body photo:', err)
-    } finally {
-      setProcessingBody(false)
+      setProcessingBody(true)
+
+      try {
+        const result = await removeImageBackground(file)
+        const b64 = await blobToBase64(result.blob)
+        setUserBodyCutout(`data:image/png;base64,${b64}`)
+      } catch (err) {
+        console.warn('Background removal skipped, using photo overlay:', err)
+      } finally {
+        setProcessingBody(false)
+      }
     }
+    reader.readAsDataURL(file)
   }
 
   // Save to DB and Local Cache
