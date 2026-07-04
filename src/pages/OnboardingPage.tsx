@@ -1,9 +1,10 @@
-import { useRef, useState, useCallback, useMemo } from 'react'
+import { useRef, useState, useCallback } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { initPoseLandmarker, extractMeasurements, type BodyMeasurements } from '../lib/poseDetection'
 import { removeImageBackground, blobToBase64 } from '../lib/backgroundRemoval'
 import { cacheMannequin } from '../lib/idb'
+import { MannequinPreview, exportMannequinToDataUrl } from '../components/MannequinPreview'
 
 type OnboardingStep = 'choose_mode' | 'manual_form' | 'photo_height' | 'photo_capture' | 'processing' | 'editor' | 'saving' | 'done' | 'error'
 
@@ -42,9 +43,7 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
   
   // Real body cutout base64 PNG from user's full-body photo
   const [userBodyCutout, setUserBodyCutout] = useState<string | null>(null)
-  
-  // Synchronous mannequin body preview - recomputes instantly on every measurement change
-  const mannequinBodyUrl = useMemo(() => drawMannequinBodySync(measurements), [measurements])
+
 
   // Processing state
   const [progress, setProgress] = useState(0)
@@ -171,8 +170,7 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
     setStep('saving')
 
     try {
-      // Use the synchronously generated body preview for caching
-      const svgData = mannequinBodyUrl
+      const svgData = exportMannequinToDataUrl(measurements, facePhotoUrl, userBodyCutout)
 
       // Normalized relative values for Edge Functions / VTON rendering
       const scale = measurements.altura_cm
@@ -434,31 +432,11 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
                 background: 'linear-gradient(180deg, var(--clr-surface-2) 0%, var(--clr-surface-3) 100%)',
                 boxShadow: 'var(--shadow-glow)',
               }}>
-                {/* Body: real cutout if available, otherwise drawn silhouette */}
-                <img
-                  src={userBodyCutout || mannequinBodyUrl}
-                  alt="Vista previa del maniquí"
-                  style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+                <MannequinPreview
+                  measurements={measurements}
+                  facePhotoUrl={facePhotoUrl}
+                  userBodyCutout={userBodyCutout}
                 />
-                {/* Face photo overlay - circular, positioned at head */}
-                {facePhotoUrl && !userBodyCutout && (
-                  <img
-                    src={facePhotoUrl}
-                    alt="Rostro"
-                    style={{
-                      position: 'absolute',
-                      top: '11%',
-                      left: '50%',
-                      transform: 'translateX(-50%)',
-                      width: 30,
-                      height: 30,
-                      borderRadius: '50%',
-                      objectFit: 'cover',
-                      border: '2px solid var(--clr-primary)',
-                      boxShadow: '0 0 8px var(--clr-primary-glow)',
-                    }}
-                  />
-                )}
               </div>
 
 
@@ -567,83 +545,3 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
   )
 }
 
-/**
- * Draws the mannequin body SYNCHRONOUSLY onto an offscreen canvas.
- * Returns a PNG dataURL immediately — no async/promises needed.
- * Face photo and body cutout are handled as CSS overlays in JSX.
- */
-function drawMannequinBodySync(m: RealMeasurements): string {
-  try {
-    const canvas = document.createElement('canvas')
-    canvas.width = 400
-    canvas.height = 700
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return ''
-
-    const W = canvas.width
-    const H = canvas.height
-    const cx = W / 2
-
-    const availableH = H * 0.82
-    const heightCm = m.altura_cm || 165
-    const scale = availableH / heightCm
-
-    const flatShoulder = m.hombros_cm
-    const flatWaist = m.cintura_cm * 0.32
-    const flatHip = m.cadera_cm * 0.32
-
-    const shoulderW = Math.max(35, (flatShoulder * scale) / 2)
-    const waistW    = Math.max(25, (flatWaist * scale) / 2)
-    const hipW      = Math.max(35, (flatHip * scale) / 2)
-    const torsoH    = Math.max(70, m.largo_torso_cm * scale)
-    const legH      = Math.max(110, m.largo_piernas_cm * scale)
-
-    const headR     = Math.max(24, shoulderW * 0.45)
-    const startY    = H * 0.06
-    const headY     = startY + headR
-    const shoulderY = headY + headR * 1.4
-    const waistY    = shoulderY + torsoH * 0.45
-    const hipY      = shoulderY + torsoH
-    const ankleY    = Math.min(H * 0.94, hipY + legH)
-
-    // Glowing halo background
-    const halo = ctx.createRadialGradient(cx, H * 0.5, 20, cx, H * 0.5, W * 0.45)
-    halo.addColorStop(0, 'rgba(201, 160, 180, 0.25)')
-    halo.addColorStop(1, 'rgba(0, 0, 0, 0)')
-    ctx.fillStyle = halo
-    ctx.fillRect(0, 0, W, H)
-
-    // Body gradient
-    const grad = ctx.createLinearGradient(0, headY, 0, ankleY)
-    grad.addColorStop(0,   'rgba(225, 195, 215, 0.95)')
-    grad.addColorStop(0.4, 'rgba(195, 160, 185, 0.95)')
-    grad.addColorStop(1,   'rgba(160, 125, 152, 0.90)')
-    ctx.fillStyle = grad
-    ctx.strokeStyle = 'rgba(255, 230, 248, 0.8)'
-    ctx.lineWidth = 2.5
-
-    // Body silhouette
-    ctx.beginPath()
-    ctx.moveTo(cx - shoulderW, shoulderY)
-    ctx.bezierCurveTo(cx - shoulderW - 4, waistY - torsoH * 0.15, cx - waistW, waistY, cx - hipW, hipY)
-    ctx.lineTo(cx - hipW * 0.55, ankleY)
-    ctx.lineTo(cx + hipW * 0.55, ankleY)
-    ctx.lineTo(cx + hipW, hipY)
-    ctx.bezierCurveTo(cx + waistW, waistY, cx + shoulderW + 4, waistY - torsoH * 0.15, cx + shoulderW, shoulderY)
-    ctx.lineTo(cx + headR * 0.35, shoulderY - headR * 0.25)
-    ctx.lineTo(cx - headR * 0.35, shoulderY - headR * 0.25)
-    ctx.closePath()
-    ctx.fill()
-    ctx.stroke()
-
-    // Head circle (face photo overlaid via CSS in JSX)
-    ctx.beginPath()
-    ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.stroke()
-
-    return canvas.toDataURL('image/png')
-  } catch {
-    return ''
-  }
-}
