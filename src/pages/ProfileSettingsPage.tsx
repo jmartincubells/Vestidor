@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { getCachedMannequin, cacheMannequin } from '../lib/idb'
@@ -31,7 +31,9 @@ export default function ProfileSettingsPage({ user }: ProfileSettingsPageProps) 
   const [facePhotoUrl, setFacePhotoUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+
+  // Synchronous mannequin body preview - recomputes instantly on every measurement change
+  const mannequinBodyUrl = useMemo(() => drawMannequinBodySync(measurements), [measurements])
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const faceInputRef = useRef<HTMLInputElement>(null)
@@ -41,13 +43,6 @@ export default function ProfileSettingsPage({ user }: ProfileSettingsPageProps) 
     loadMannequinData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user.id])
-
-  // Redraw mannequin preview whenever measurements or face change
-  useEffect(() => {
-    if (!loading) {
-      drawMannequinToDataUrl(measurements, facePhotoUrl).then(url => setPreviewUrl(url))
-    }
-  }, [loading, measurements, facePhotoUrl])
 
   async function loadMannequinData() {
     setLoading(true)
@@ -107,8 +102,8 @@ export default function ProfileSettingsPage({ user }: ProfileSettingsPageProps) 
   async function handleSave() {
     setSaving(true)
     try {
-      // Generate final mannequin PNG for caching
-      const svgData = await drawMannequinToDataUrl(measurements, facePhotoUrl)
+      // Use the synchronously generated body as the cached preview
+      const svgData = mannequinBodyUrl
 
       const scale = measurements.altura_cm
       const ancho_hombros = measurements.hombros_cm / scale
@@ -186,12 +181,12 @@ export default function ProfileSettingsPage({ user }: ProfileSettingsPageProps) 
           <div className="animate-fade-in flex flex-col gap-lg">
             
             {/* Editor Grid: Canvas Left, Form Right */}
-            {/* Hidden off-screen canvas used only for export */}
+            {/* Hidden canvas used only for save export */}
             <canvas ref={canvasRef} style={{ display: 'none' }} />
 
             <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 'var(--space-md)', width: '100%', alignItems: 'start' }}>
               
-              {/* Mannequin Preview */}
+              {/* Mannequin Preview - renders instantly via useMemo */}
               <div className="flex flex-col items-center gap-xs">
                 <div style={{
                   position: 'relative',
@@ -202,18 +197,31 @@ export default function ProfileSettingsPage({ user }: ProfileSettingsPageProps) 
                   border: '1px solid var(--clr-primary-glow)',
                   background: 'linear-gradient(180deg, var(--clr-surface-2) 0%, var(--clr-surface-3) 100%)',
                   boxShadow: 'var(--shadow-glow)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
                 }}>
-                  {previewUrl ? (
+                  {/* Mannequin body - drawn synchronously */}
+                  <img
+                    src={mannequinBodyUrl}
+                    alt="Vista previa del maniquí"
+                    style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+                  />
+                  {/* Face photo overlay - circular positioned at head */}
+                  {facePhotoUrl && (
                     <img
-                      src={previewUrl}
-                      alt="Vista previa del maniquí"
-                      style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                      src={facePhotoUrl}
+                      alt="Rostro"
+                      style={{
+                        position: 'absolute',
+                        top: '11%',
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        width: 30,
+                        height: 30,
+                        borderRadius: '50%',
+                        objectFit: 'cover',
+                        border: '2px solid var(--clr-primary)',
+                        boxShadow: '0 0 8px var(--clr-primary-glow)',
+                      }}
                     />
-                  ) : (
-                    <div className="spinner" />
                   )}
                 </div>
 
@@ -293,18 +301,18 @@ export default function ProfileSettingsPage({ user }: ProfileSettingsPageProps) 
 }
 
 /**
- * Renders the mannequin onto an offscreen canvas and returns a PNG dataURL.
- * Fully async to handle face/body image loading correctly.
+ * Draws the mannequin body SYNCHRONOUSLY onto an offscreen canvas.
+ * Returns a PNG dataURL immediately — no async/promises needed.
+ * Face photo is handled separately as a CSS overlay in the JSX.
  */
-function drawMannequinToDataUrl(
-  m: RealMeasurements,
-  facePhotoUrl: string | null
-): Promise<string> {
-  return new Promise(resolve => {
+function drawMannequinBodySync(m: RealMeasurements): string {
+  try {
     const canvas = document.createElement('canvas')
     canvas.width = 400
     canvas.height = 700
-    const ctx = canvas.getContext('2d')!
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return ''
+
     const W = canvas.width
     const H = canvas.height
     const cx = W / 2
@@ -333,7 +341,7 @@ function drawMannequinToDataUrl(
 
     // Glowing halo background
     const halo = ctx.createRadialGradient(cx, H * 0.5, 20, cx, H * 0.5, W * 0.45)
-    halo.addColorStop(0, 'rgba(201, 160, 180, 0.18)')
+    halo.addColorStop(0, 'rgba(201, 160, 180, 0.25)')
     halo.addColorStop(1, 'rgba(0, 0, 0, 0)')
     ctx.fillStyle = halo
     ctx.fillRect(0, 0, W, H)
@@ -344,7 +352,7 @@ function drawMannequinToDataUrl(
     grad.addColorStop(0.4, 'rgba(195, 160, 185, 0.95)')
     grad.addColorStop(1,   'rgba(160, 125, 152, 0.90)')
     ctx.fillStyle = grad
-    ctx.strokeStyle = 'rgba(255, 230, 248, 0.7)'
+    ctx.strokeStyle = 'rgba(255, 230, 248, 0.8)'
     ctx.lineWidth = 2.5
 
     // Body silhouette
@@ -361,41 +369,14 @@ function drawMannequinToDataUrl(
     ctx.fill()
     ctx.stroke()
 
-    // Head + optional face photo
-    const finalize = () => resolve(canvas.toDataURL('image/png'))
+    // Head circle (face photo is overlaid via CSS in JSX)
+    ctx.beginPath()
+    ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
 
-    if (facePhotoUrl) {
-      const faceImg = new Image()
-      faceImg.crossOrigin = 'anonymous'
-      faceImg.onload = () => {
-        ctx.save()
-        ctx.beginPath()
-        ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-        ctx.clip()
-        ctx.drawImage(faceImg, cx - headR, headY - headR, headR * 2, headR * 2)
-        ctx.restore()
-        ctx.beginPath()
-        ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-        ctx.strokeStyle = '#c9a0b4'
-        ctx.lineWidth = 3
-        ctx.stroke()
-        finalize()
-      }
-      faceImg.onerror = () => {
-        // Fallback to plain head if photo fails
-        ctx.beginPath()
-        ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-        ctx.fill()
-        ctx.stroke()
-        finalize()
-      }
-      faceImg.src = facePhotoUrl
-    } else {
-      ctx.beginPath()
-      ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.stroke()
-      finalize()
-    }
-  })
+    return canvas.toDataURL('image/png')
+  } catch {
+    return ''
+  }
 }

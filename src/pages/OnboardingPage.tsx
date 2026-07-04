@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect } from 'react'
+import { useRef, useState, useCallback, useMemo } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { initPoseLandmarker, extractMeasurements, type BodyMeasurements } from '../lib/poseDetection'
@@ -43,8 +43,8 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
   // Real body cutout base64 PNG from user's full-body photo
   const [userBodyCutout, setUserBodyCutout] = useState<string | null>(null)
   
-  // Live mannequin preview as PNG dataURL
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  // Synchronous mannequin body preview - recomputes instantly on every measurement change
+  const mannequinBodyUrl = useMemo(() => drawMannequinBodySync(measurements), [measurements])
 
   // Processing state
   const [progress, setProgress] = useState(0)
@@ -55,13 +55,6 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const galleryInputRef = useRef<HTMLInputElement>(null)
   const faceInputRef = useRef<HTMLInputElement>(null)
-
-  // Redraw mannequin preview whenever measurements, face photo, or body cutout change
-  useEffect(() => {
-    if (step === 'editor') {
-      drawMannequinToDataUrl(measurements, facePhotoUrl, userBodyCutout).then(url => setPreviewUrl(url))
-    }
-  }, [step, measurements, facePhotoUrl, userBodyCutout])
 
   // Handle measurement changes with validation
   const updateMeasurement = (key: keyof RealMeasurements, val: number) => {
@@ -178,8 +171,8 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
     setStep('saving')
 
     try {
-      // Use previewUrl if already generated, otherwise render now
-      const svgData = previewUrl ?? await drawMannequinToDataUrl(measurements, facePhotoUrl, userBodyCutout)
+      // Use the synchronously generated body preview for caching
+      const svgData = mannequinBodyUrl
 
       // Normalized relative values for Edge Functions / VTON rendering
       const scale = measurements.altura_cm
@@ -440,20 +433,34 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
                 border: '1px solid var(--clr-primary-glow)',
                 background: 'linear-gradient(180deg, var(--clr-surface-2) 0%, var(--clr-surface-3) 100%)',
                 boxShadow: 'var(--shadow-glow)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
               }}>
-                {previewUrl ? (
+                {/* Body: real cutout if available, otherwise drawn silhouette */}
+                <img
+                  src={userBodyCutout || mannequinBodyUrl}
+                  alt="Vista previa del maniquí"
+                  style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+                />
+                {/* Face photo overlay - circular, positioned at head */}
+                {facePhotoUrl && !userBodyCutout && (
                   <img
-                    src={previewUrl}
-                    alt="Vista previa del maniquí"
-                    style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                    src={facePhotoUrl}
+                    alt="Rostro"
+                    style={{
+                      position: 'absolute',
+                      top: '11%',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      width: 30,
+                      height: 30,
+                      borderRadius: '50%',
+                      objectFit: 'cover',
+                      border: '2px solid var(--clr-primary)',
+                      boxShadow: '0 0 8px var(--clr-primary-glow)',
+                    }}
                   />
-                ) : (
-                  <div className="spinner" />
                 )}
               </div>
+
 
               {/* Face photo button below canvas */}
               <button
@@ -561,53 +568,22 @@ export default function OnboardingPage({ user, onComplete }: OnboardingPageProps
 }
 
 /**
- * Renders the mannequin (or real body cutout) onto an offscreen canvas
- * and returns a PNG dataURL. Fully async to handle image loading.
+ * Draws the mannequin body SYNCHRONOUSLY onto an offscreen canvas.
+ * Returns a PNG dataURL immediately — no async/promises needed.
+ * Face photo and body cutout are handled as CSS overlays in JSX.
  */
-function drawMannequinToDataUrl(
-  m: RealMeasurements,
-  facePhotoUrl: string | null,
-  userBodyCutout: string | null = null
-): Promise<string> {
-  return new Promise(resolve => {
+function drawMannequinBodySync(m: RealMeasurements): string {
+  try {
     const canvas = document.createElement('canvas')
     canvas.width = 400
     canvas.height = 700
-    const ctx = canvas.getContext('2d')!
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return ''
+
     const W = canvas.width
     const H = canvas.height
     const cx = W / 2
 
-    // If user has a real body photo cutout, use it
-    if (userBodyCutout) {
-      const bodyImg = new Image()
-      bodyImg.onload = () => {
-        ctx.drawImage(bodyImg, 20, 20, W - 40, H - 40)
-        if (facePhotoUrl) {
-          const faceImg = new Image()
-          faceImg.onload = () => {
-            const headR = 36
-            const headY = H * 0.14
-            ctx.save()
-            ctx.beginPath()
-            ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-            ctx.clip()
-            ctx.drawImage(faceImg, cx - headR, headY - headR, headR * 2, headR * 2)
-            ctx.restore()
-            resolve(canvas.toDataURL('image/png'))
-          }
-          faceImg.onerror = () => resolve(canvas.toDataURL('image/png'))
-          faceImg.src = facePhotoUrl
-        } else {
-          resolve(canvas.toDataURL('image/png'))
-        }
-      }
-      bodyImg.onerror = () => resolve(canvas.toDataURL('image/png'))
-      bodyImg.src = userBodyCutout
-      return
-    }
-
-    // Stylized vector mannequin
     const availableH = H * 0.82
     const heightCm = m.altura_cm || 165
     const scale = availableH / heightCm
@@ -630,20 +606,23 @@ function drawMannequinToDataUrl(
     const hipY      = shoulderY + torsoH
     const ankleY    = Math.min(H * 0.94, hipY + legH)
 
+    // Glowing halo background
     const halo = ctx.createRadialGradient(cx, H * 0.5, 20, cx, H * 0.5, W * 0.45)
-    halo.addColorStop(0, 'rgba(201, 160, 180, 0.18)')
+    halo.addColorStop(0, 'rgba(201, 160, 180, 0.25)')
     halo.addColorStop(1, 'rgba(0, 0, 0, 0)')
     ctx.fillStyle = halo
     ctx.fillRect(0, 0, W, H)
 
+    // Body gradient
     const grad = ctx.createLinearGradient(0, headY, 0, ankleY)
     grad.addColorStop(0,   'rgba(225, 195, 215, 0.95)')
     grad.addColorStop(0.4, 'rgba(195, 160, 185, 0.95)')
     grad.addColorStop(1,   'rgba(160, 125, 152, 0.90)')
     ctx.fillStyle = grad
-    ctx.strokeStyle = 'rgba(255, 230, 248, 0.7)'
+    ctx.strokeStyle = 'rgba(255, 230, 248, 0.8)'
     ctx.lineWidth = 2.5
 
+    // Body silhouette
     ctx.beginPath()
     ctx.moveTo(cx - shoulderW, shoulderY)
     ctx.bezierCurveTo(cx - shoulderW - 4, waistY - torsoH * 0.15, cx - waistW, waistY, cx - hipW, hipY)
@@ -657,39 +636,14 @@ function drawMannequinToDataUrl(
     ctx.fill()
     ctx.stroke()
 
-    const finalize = () => resolve(canvas.toDataURL('image/png'))
+    // Head circle (face photo overlaid via CSS in JSX)
+    ctx.beginPath()
+    ctx.arc(cx, headY, headR, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
 
-    if (facePhotoUrl) {
-      const faceImg = new Image()
-      faceImg.crossOrigin = 'anonymous'
-      faceImg.onload = () => {
-        ctx.save()
-        ctx.beginPath()
-        ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-        ctx.clip()
-        ctx.drawImage(faceImg, cx - headR, headY - headR, headR * 2, headR * 2)
-        ctx.restore()
-        ctx.beginPath()
-        ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-        ctx.strokeStyle = '#c9a0b4'
-        ctx.lineWidth = 3
-        ctx.stroke()
-        finalize()
-      }
-      faceImg.onerror = () => {
-        ctx.beginPath()
-        ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-        ctx.fill()
-        ctx.stroke()
-        finalize()
-      }
-      faceImg.src = facePhotoUrl
-    } else {
-      ctx.beginPath()
-      ctx.arc(cx, headY, headR, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.stroke()
-      finalize()
-    }
-  })
+    return canvas.toDataURL('image/png')
+  } catch {
+    return ''
+  }
 }
