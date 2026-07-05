@@ -67,8 +67,12 @@ export default function ProfileSettingsPage({ user }: ProfileSettingsPageProps) 
             largo_piernas_cm: json.real_cm.largo_piernas_cm || 80,
           })
         }
-        if (json?.face_photo_base64) setFacePhotoUrl(json.face_photo_base64)
-        if (json?.body_cutout_base64) setUserBodyCutout(json.body_cutout_base64)
+        if (json?.face_photo_base64 && json.face_photo_base64.trim().length > 50) {
+          setFacePhotoUrl(json.face_photo_base64)
+        }
+        if (json?.body_cutout_base64 && json.body_cutout_base64.trim().length > 50) {
+          setUserBodyCutout(json.body_cutout_base64)
+        }
       } else {
         // Fallback to cache
         const cached = await getCachedMannequin()

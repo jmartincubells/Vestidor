@@ -12,10 +12,21 @@ interface MannequinPreviewProps {
 
 /**
  * Ensures any base64 or URL string has a valid Data URL prefix for SVG <image> compatibility.
+ * Cleans up double-prefixes or corrupted base64 strings.
  */
 function ensureDataUrl(src: string | null | undefined): string | null {
   if (!src) return null
-  const trimmed = src.trim()
+  let trimmed = src.trim()
+  if (!trimmed || trimmed === 'null' || trimmed === 'undefined' || trimmed.length < 20) return null
+
+  // Fix accidental double prefix: "data:image/png;base64,data:image/png;base64,..."
+  while (trimmed.startsWith('data:image/png;base64,data:image/')) {
+    trimmed = trimmed.replace('data:image/png;base64,', '')
+  }
+  while (trimmed.startsWith('data:image/jpeg;base64,data:image/')) {
+    trimmed = trimmed.replace('data:image/jpeg;base64,', '')
+  }
+
   if (
     trimmed.startsWith('data:') ||
     trimmed.startsWith('blob:') ||
@@ -24,6 +35,7 @@ function ensureDataUrl(src: string | null | undefined): string | null {
   ) {
     return trimmed
   }
+
   // Raw base64 string from database: add PNG data URL prefix
   return `data:image/png;base64,${trimmed}`
 }
@@ -169,6 +181,10 @@ export function MannequinPreview({
           height="660"
           preserveAspectRatio="xMidYMid meet"
           opacity={0.75}
+          onError={(e) => {
+            // Hide broken image placeholder immediately if URL fails
+            (e.currentTarget as SVGElement).style.display = 'none'
+          }}
         />
       )}
 
@@ -221,6 +237,9 @@ export function MannequinPreview({
               height={headR * 2}
               clipPath={`url(#faceClip-${maskId})`}
               preserveAspectRatio="xMidYMid slice"
+              onError={(e) => {
+                (e.currentTarget as SVGElement).style.display = 'none'
+              }}
             />
             <circle
               cx={cx}
